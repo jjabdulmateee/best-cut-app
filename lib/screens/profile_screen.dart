@@ -1,6 +1,13 @@
 import 'package:flutter/material.dart';
 import '../data/user_data_provider.dart';
 import '../main.dart';
+import 'account/personal_info_screen.dart';
+import 'account/saved_addresses_screen.dart';
+import 'account/payment_methods_screen.dart';
+import 'account/notifications_screen.dart';
+import 'account/help_support_screen.dart';
+import 'account/web_content_screen.dart';
+import 'account/add_money_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -214,10 +221,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     icon: const Icon(Icons.edit_outlined),
                     color: Colors.grey[600],
                     onPressed: () {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('Edit profile coming soon!'),
-                          duration: Duration(seconds: 1),
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => const PersonalInfoScreen(),
                         ),
                       );
                     },
@@ -281,17 +288,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       ),
                     ),
                     GestureDetector(
-                      onTap: () async {
-                        // Simulate adding money
-                        await _userDataProvider.addMoneyToWallet(1000, 'Added via profile');
-                        if (mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('PKR 1,000 added to wallet!'),
-                              duration: Duration(seconds: 1),
-                            ),
-                          );
-                        }
+                      onTap: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => const AddMoneyScreen(),
+                          ),
+                        );
                       },
                       child: Container(
                         padding: const EdgeInsets.symmetric(
@@ -334,6 +337,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       icon: Icons.person_outline,
                       title: 'Personal Information',
                       subtitle: 'Update your profile details',
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => const PersonalInfoScreen()),
+                      ),
                     ),
                     _buildDivider(),
                     _buildMenuItem(
@@ -341,6 +348,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       icon: Icons.location_on_outlined,
                       title: 'Saved Addresses',
                       subtitle: 'Manage your addresses',
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => const SavedAddressesScreen()),
+                      ),
                     ),
                     _buildDivider(),
                     _buildMenuItem(
@@ -348,6 +359,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       icon: Icons.payment_outlined,
                       title: 'Payment Methods',
                       subtitle: 'Manage payment options',
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => const PaymentMethodsScreen()),
+                      ),
                     ),
                     _buildDivider(),
                     _buildMenuItem(
@@ -355,6 +370,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       icon: Icons.notifications_outlined,
                       title: 'Notifications',
                       subtitle: 'Customize notifications',
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => const NotificationsScreen()),
+                      ),
                     ),
                   ],
                 ),
@@ -378,6 +397,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       icon: Icons.help_outline,
                       title: 'Help & Support',
                       subtitle: 'Get help with your account',
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(builder: (_) => const HelpSupportScreen()),
+                      ),
                     ),
                     _buildDivider(),
                     _buildMenuItem(
@@ -385,6 +408,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       icon: Icons.privacy_tip_outlined,
                       title: 'Privacy Policy',
                       subtitle: 'Read our privacy policy',
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const WebContentScreen(
+                            title: 'Privacy Policy',
+                            contentType: 'privacy',
+                          ),
+                        ),
+                      ),
                     ),
                     _buildDivider(),
                     _buildMenuItem(
@@ -392,6 +424,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       icon: Icons.description_outlined,
                       title: 'Terms of Service',
                       subtitle: 'Read our terms',
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const WebContentScreen(
+                            title: 'Terms of Service',
+                            contentType: 'terms',
+                          ),
+                        ),
+                      ),
                     ),
                   ],
                 ),
@@ -466,6 +507,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     required IconData icon,
     required String title,
     required String subtitle,
+    required VoidCallback onTap,
   }) {
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
@@ -497,14 +539,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         Icons.chevron_right,
         color: Colors.grey[400],
       ),
-      onTap: () {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('$title coming soon!'),
-            duration: const Duration(seconds: 1),
-          ),
-        );
-      },
+      onTap: onTap,
     );
   }
 

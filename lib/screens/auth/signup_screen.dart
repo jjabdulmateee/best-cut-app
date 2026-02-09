@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../services/auth_service.dart';
 import '../../data/user_data_provider.dart';
+import '../../config/dev_config.dart';
 import '../../main.dart';
 
 class SignUpScreen extends StatefulWidget {
@@ -69,12 +70,16 @@ class _SignUpScreenState extends State<SignUpScreen> {
 
     if (result.isSuccess) {
       if (_selectedRole == UserRole.barber) {
-        // Show pending dialog for barbers
+        // DEV MODE: If approval is disabled, barbers get instant access
+        // Show different dialog based on mode
         setState(() => _isLoading = false);
-        _showBarberPendingDialog();
+        if (ENABLE_BARBER_APPROVAL) {
+          _showBarberPendingDialog();
+        } else {
+          _showBarberInstantAccessDialog();
+        }
       } else {
         // Customer signup - go directly to app
-        await UserDataProvider().initialize();
         if (mounted) {
           _showSuccessAndNavigate();
         }
@@ -123,13 +128,17 @@ class _SignUpScreenState extends State<SignUpScreen> {
     if (value == null || value.isEmpty) {
       return 'Please enter your phone number';
     }
-    // Allow flexible Pakistani phone format
-    final cleaned = value.replaceAll(RegExp(r'[\s-]'), '');
-    if (!cleaned.startsWith('03') && !cleaned.startsWith('+923')) {
-      return 'Enter a valid Pakistani number (03XX-XXXXXXX)';
-    }
-    if (cleaned.length < 10) {
+    // Normalize to E.164 and validate
+    final normalized = AuthService.normalizePhoneToE164(value);
+    final digits = normalized.replaceAll(RegExp(r'[^\d]'), '');
+    if (digits.length < 8) {
       return 'Phone number is too short';
+    }
+    if (digits.length > 15) {
+      return 'Phone number is too long';
+    }
+    if (!normalized.startsWith('+')) {
+      return 'Please include country code (e.g. +92 for Pakistan)';
     }
     return null;
   }
@@ -189,6 +198,58 @@ class _SignUpScreenState extends State<SignUpScreen> {
             },
             child: const Text(
               'Got it',
+              style: TextStyle(
+                color: Color(0xFF1A1A1A),
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // DEV MODE: Instant access dialog for barbers when approval is disabled
+  void _showBarberInstantAccessDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.green[100],
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(Icons.check_circle, color: Colors.green[700]),
+            ),
+            const SizedBox(width: 12),
+            const Expanded(
+              child: Text(
+                'Account Created!',
+                style: TextStyle(fontSize: 18),
+              ),
+            ),
+          ],
+        ),
+        content: const Text(
+          'Your barber account has been created successfully!\n\n'
+          'You can now access all barber features and start accepting bookings.',
+          style: TextStyle(fontSize: 15, height: 1.5),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.of(context).pushAndRemoveUntil(
+                MaterialPageRoute(builder: (_) => const AuthWrapper()),
+                (route) => false,
+              );
+            },
+            child: const Text(
+              'Get Started',
               style: TextStyle(
                 color: Color(0xFF1A1A1A),
                 fontWeight: FontWeight.w600,
@@ -333,23 +394,34 @@ class _SignUpScreenState extends State<SignUpScreen> {
                   const SizedBox(height: 16),
                 ],
                 
-                // Barber approval notice
+                // Barber approval notice (conditional based on dev mode)
                 if (isBarber) ...[
                   Container(
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
-                      color: Colors.blue[50],
+                      color: ENABLE_BARBER_APPROVAL ? Colors.blue[50] : Colors.green[50],
                       borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: Colors.blue[200]!),
+                      border: Border.all(
+                        color: ENABLE_BARBER_APPROVAL ? Colors.blue[200]! : Colors.green[200]!,
+                      ),
                     ),
                     child: Row(
                       children: [
-                        Icon(Icons.info_outline, color: Colors.blue[700], size: 20),
+                        Icon(
+                          ENABLE_BARBER_APPROVAL ? Icons.info_outline : Icons.check_circle_outline,
+                          color: ENABLE_BARBER_APPROVAL ? Colors.blue[700] : Colors.green[700],
+                          size: 20,
+                        ),
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
-                            'Barber accounts require admin approval before activation.',
-                            style: TextStyle(color: Colors.blue[700], fontSize: 13),
+                            ENABLE_BARBER_APPROVAL
+                                ? 'Barber accounts require admin approval before activation.'
+                                : 'Instant activation - you can start accepting bookings immediately after signup.',
+                            style: TextStyle(
+                              color: ENABLE_BARBER_APPROVAL ? Colors.blue[700] : Colors.green[700],
+                              fontSize: 13,
+                            ),
                           ),
                         ),
                       ],
@@ -420,14 +492,14 @@ class _SignUpScreenState extends State<SignUpScreen> {
                 ),
                 const SizedBox(height: 16),
 
-                // Phone field
+                // Phone field (E.164 global format, supports all countries)
                 TextFormField(
                   controller: _phoneController,
                   keyboardType: TextInputType.phone,
                   textInputAction: TextInputAction.next,
                   decoration: _inputDecoration(
                     label: 'Phone Number',
-                    hint: '03XX-XXXXXXX',
+                    hint: '03XX-XXXXXXX or +92 3XX XXXXXXX',
                     icon: Icons.phone_outlined,
                   ),
                   validator: _validatePhone,

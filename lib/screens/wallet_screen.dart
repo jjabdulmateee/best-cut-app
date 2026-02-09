@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
-import '../data/app_data.dart';
+import '../data/user_data_provider.dart';
+import '../data/app_data.dart' show WalletTransaction, TransactionType, TransactionTypeExtension;
+import 'account/add_money_screen.dart';
 
 class WalletScreen extends StatefulWidget {
   const WalletScreen({super.key});
@@ -9,7 +11,23 @@ class WalletScreen extends StatefulWidget {
 }
 
 class _WalletScreenState extends State<WalletScreen> {
-  final AppData _appData = AppData();
+  final _userDataProvider = UserDataProvider();
+
+  @override
+  void initState() {
+    super.initState();
+    _userDataProvider.addListener(_onDataChanged);
+  }
+
+  @override
+  void dispose() {
+    _userDataProvider.removeListener(_onDataChanged);
+    super.dispose();
+  }
+
+  void _onDataChanged() {
+    if (mounted) setState(() {});
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -81,18 +99,18 @@ class _WalletScreenState extends State<WalletScreen> {
           ),
           
           // Transactions list
-          _appData.transactions.isEmpty
+          _userDataProvider.customerTransactions.isEmpty
               ? SliverToBoxAdapter(child: _buildEmptyTransactions())
               : SliverList(
                   delegate: SliverChildBuilderDelegate(
                     (context, index) {
-                      final transaction = _appData.transactions[index];
+                      final transaction = _userDataProvider.customerTransactions[index];
                       return Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 16),
                         child: _buildTransactionTile(transaction),
                       );
                     },
-                    childCount: _appData.transactions.length,
+                    childCount: _userDataProvider.customerTransactions.length,
                   ),
                 ),
           
@@ -188,7 +206,7 @@ class _WalletScreenState extends State<WalletScreen> {
           ),
           const SizedBox(height: 4),
           Text(
-            'PKR ${_appData.walletBalance}',
+            'PKR ${_userDataProvider.walletBalance}',
             style: const TextStyle(
               color: Colors.white,
               fontSize: 36,
@@ -411,154 +429,9 @@ class _WalletScreenState extends State<WalletScreen> {
   }
 
   void _showAddMoneySheet() {
-    final amounts = [500, 1000, 2000, 5000];
-    int? selectedAmount;
-    final controller = TextEditingController();
-
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setSheetState) => Container(
-          padding: EdgeInsets.fromLTRB(
-            20,
-            20,
-            20,
-            20 + MediaQuery.of(context).viewInsets.bottom,
-          ),
-          decoration: const BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Center(
-                child: Container(
-                  width: 40,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: Colors.grey[300],
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 20),
-              const Text(
-                'Add Money',
-                style: TextStyle(
-                  fontSize: 22,
-                  fontWeight: FontWeight.w700,
-                  color: Color(0xFF1A1A1A),
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Select or enter amount to add',
-                style: TextStyle(
-                  fontSize: 14,
-                  color: Colors.grey[600],
-                ),
-              ),
-              const SizedBox(height: 20),
-              Wrap(
-                spacing: 10,
-                runSpacing: 10,
-                children: amounts.map((amount) {
-                  final isSelected = selectedAmount == amount;
-                  return GestureDetector(
-                    onTap: () {
-                      setSheetState(() {
-                        selectedAmount = amount;
-                        controller.text = amount.toString();
-                      });
-                    },
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 20,
-                        vertical: 12,
-                      ),
-                      decoration: BoxDecoration(
-                        color: isSelected
-                            ? const Color(0xFF1A1A1A)
-                            : const Color(0xFFF5F5F5),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: Text(
-                        'PKR $amount',
-                        style: TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w600,
-                          color: isSelected ? Colors.white : const Color(0xFF1A1A1A),
-                        ),
-                      ),
-                    ),
-                  );
-                }).toList(),
-              ),
-              const SizedBox(height: 20),
-              TextField(
-                controller: controller,
-                keyboardType: TextInputType.number,
-                decoration: InputDecoration(
-                  hintText: 'Enter custom amount',
-                  prefixText: 'PKR ',
-                  filled: true,
-                  fillColor: const Color(0xFFF5F5F5),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide.none,
-                  ),
-                ),
-                onChanged: (value) {
-                  setSheetState(() {
-                    selectedAmount = int.tryParse(value);
-                  });
-                },
-              ),
-              const SizedBox(height: 20),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: selectedAmount != null && selectedAmount! > 0
-                      ? () {
-                          _appData.addMoney(selectedAmount!, 'Top-up via JazzCash');
-                          Navigator.pop(context);
-                          setState(() {});
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text('PKR $selectedAmount added to wallet!'),
-                              backgroundColor: const Color(0xFF00AA5B),
-                            ),
-                          );
-                        }
-                      : null,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF1A1A1A),
-                    foregroundColor: Colors.white,
-                    disabledBackgroundColor: Colors.grey[300],
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    elevation: 0,
-                  ),
-                  child: const Text(
-                    'Add Money',
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 10),
-            ],
-          ),
-        ),
-      ),
+    Navigator.push(
+      context, 
+      MaterialPageRoute(builder: (_) => const AddMoneyScreen()),
     );
   }
 }

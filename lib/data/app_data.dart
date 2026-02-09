@@ -1,4 +1,6 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/slot.dart';
 import '../models/customer.dart';
 
@@ -735,7 +737,7 @@ class WalletTransaction {
   String get formattedDate {
     final now = DateTime.now();
     final diff = now.difference(createdAt);
-    
+
     if (diff.inDays == 0) {
       return 'Today';
     } else if (diff.inDays == 1) {
@@ -744,6 +746,250 @@ class WalletTransaction {
       return '${diff.inDays} days ago';
     } else {
       return '${createdAt.day}/${createdAt.month}/${createdAt.year}';
+    }
+  }
+}
+
+/// Dispute Reason Options
+enum DisputeReason {
+  serviceNotProvided,
+  poorServiceQuality,
+  wrongPricing,
+  lateArrival,
+  barberUnprofessional,
+  bookingCancelledUnfairly,
+  paymentIssue,
+  other;
+
+  String get reasonDisplayName {
+    switch (this) {
+      case DisputeReason.serviceNotProvided:
+        return 'Service Not Provided';
+      case DisputeReason.poorServiceQuality:
+        return 'Poor Service Quality';
+      case DisputeReason.wrongPricing:
+        return 'Wrong Pricing';
+      case DisputeReason.lateArrival:
+        return 'Late Arrival';
+      case DisputeReason.barberUnprofessional:
+        return 'Barber Unprofessional';
+      case DisputeReason.bookingCancelledUnfairly:
+        return 'Booking Cancelled Unfairly';
+      case DisputeReason.paymentIssue:
+        return 'Payment Issue';
+      case DisputeReason.other:
+        return 'Other';
+    }
+  }
+}
+
+/// Dispute Status
+enum DisputeStatus {
+  open,           // Dispute filed, under review
+  investigating,  // Admin investigating
+  resolved,       // Dispute resolved
+  closed,         // Final decision made
+}
+
+/// Escrow Status
+enum EscrowStatus {
+  held,           // Payment held in escrow
+  released,       // Payment released to barber
+  refunded,       // Payment refunded to customer
+  disputed,       // Payment disputed, held in escrow
+}
+
+/// Trust Level based on strikes/warnings
+enum TrustLevel {
+  excellent,      // 0 strikes, full trust
+  good,          // 1 strike, minor issues
+  warning,       // 2 strikes, caution advised
+  restricted,    // 3+ strikes, restricted access
+}
+
+/// Dispute Data Model
+class Dispute {
+  final String id;
+  final String bookingId;
+  final String customerId;
+  final String barberId;
+  final DisputeReason reason;
+  final String description;
+  final DisputeStatus status;
+  final DateTime createdAt;
+  final DateTime? resolvedAt;
+  final String? adminResolution;
+  final String? adminNotes;
+
+  const Dispute({
+    required this.id,
+    required this.bookingId,
+    required this.customerId,
+    required this.barberId,
+    required this.reason,
+    required this.description,
+    required this.status,
+    required this.createdAt,
+    this.resolvedAt,
+    this.adminResolution,
+    this.adminNotes,
+  });
+
+  factory Dispute.fromMap(Map<String, dynamic> map) {
+    return Dispute(
+      id: map['id'] ?? '',
+      bookingId: map['bookingId'] ?? '',
+      customerId: map['customerId'] ?? '',
+      barberId: map['barberId'] ?? '',
+      reason: DisputeReason.values.firstWhere(
+        (r) => r.name == map['reason'],
+        orElse: () => DisputeReason.other,
+      ),
+      description: map['description'] ?? '',
+      status: DisputeStatus.values.firstWhere(
+        (s) => s.name == map['status'],
+        orElse: () => DisputeStatus.open,
+      ),
+      createdAt: (map['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
+      resolvedAt: (map['resolvedAt'] as Timestamp?)?.toDate(),
+      adminResolution: map['adminResolution'],
+      adminNotes: map['adminNotes'],
+    );
+  }
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'bookingId': bookingId,
+      'customerId': customerId,
+      'barberId': barberId,
+      'reason': reason.name,
+      'description': description,
+      'status': status.name,
+      'createdAt': Timestamp.fromDate(createdAt),
+      'resolvedAt': resolvedAt != null ? Timestamp.fromDate(resolvedAt!) : null,
+      'adminResolution': adminResolution,
+      'adminNotes': adminNotes,
+    };
+  }
+
+  String get reasonDisplayName {
+    switch (reason) {
+      case DisputeReason.serviceNotProvided:
+        return 'Service Not Provided';
+      case DisputeReason.poorServiceQuality:
+        return 'Poor Service Quality';
+      case DisputeReason.wrongPricing:
+        return 'Incorrect Pricing';
+      case DisputeReason.lateArrival:
+        return 'Late Arrival';
+      case DisputeReason.barberUnprofessional:
+        return 'Unprofessional Behavior';
+      case DisputeReason.bookingCancelledUnfairly:
+        return 'Unfair Cancellation';
+      case DisputeReason.paymentIssue:
+        return 'Payment Issue';
+      case DisputeReason.other:
+        return 'Other';
+    }
+  }
+
+  String get statusDisplayName {
+    switch (status) {
+      case DisputeStatus.open:
+        return 'Under Review';
+      case DisputeStatus.investigating:
+        return 'Investigating';
+      case DisputeStatus.resolved:
+        return 'Resolved';
+      case DisputeStatus.closed:
+        return 'Closed';
+    }
+  }
+
+  Color get statusColor {
+    switch (status) {
+      case DisputeStatus.open:
+        return const Color(0xFFFF9800); // Orange
+      case DisputeStatus.investigating:
+        return const Color(0xFF2196F3); // Blue
+      case DisputeStatus.resolved:
+        return const Color(0xFF4CAF50); // Green
+      case DisputeStatus.closed:
+        return const Color(0xFF9E9E9E); // Grey
+    }
+  }
+}
+
+/// Trust/Strike Information
+class TrustInfo {
+  final int strikeCount;
+  final List<String> recentWarnings;
+  final DateTime? lastStrikeDate;
+  final String? restrictionReason;
+  final bool isRestricted;
+
+  const TrustInfo({
+    required this.strikeCount,
+    required this.recentWarnings,
+    this.lastStrikeDate,
+    this.restrictionReason,
+    this.isRestricted = false,
+  });
+
+  factory TrustInfo.fromMap(Map<String, dynamic> map) {
+    return TrustInfo(
+      strikeCount: map['strikeCount'] ?? 0,
+      recentWarnings: List<String>.from(map['recentWarnings'] ?? []),
+      lastStrikeDate: (map['lastStrikeDate'] as Timestamp?)?.toDate(),
+      restrictionReason: map['restrictionReason'],
+      isRestricted: map['isRestricted'] ?? false,
+    );
+  }
+
+  TrustLevel get trustLevel {
+    if (isRestricted) return TrustLevel.restricted;
+    if (strikeCount >= 3) return TrustLevel.warning;
+    if (strikeCount >= 1) return TrustLevel.good;
+    return TrustLevel.excellent;
+  }
+
+  Color get trustColor {
+    switch (trustLevel) {
+      case TrustLevel.excellent:
+        return const Color(0xFF4CAF50); // Green
+      case TrustLevel.good:
+        return const Color(0xFF8BC34A); // Light Green
+      case TrustLevel.warning:
+        return const Color(0xFFFF9800); // Orange
+      case TrustLevel.restricted:
+        return const Color(0xFFF44336); // Red
+    }
+  }
+
+  String get trustBadgeText {
+    switch (trustLevel) {
+      case TrustLevel.excellent:
+        return 'Excellent';
+      case TrustLevel.good:
+        return 'Good';
+      case TrustLevel.warning:
+        return 'Warning';
+      case TrustLevel.restricted:
+        return 'Restricted';
+    }
+  }
+
+  String get trustDescription {
+    switch (trustLevel) {
+      case TrustLevel.excellent:
+        return 'No issues reported. Full access to all features.';
+      case TrustLevel.good:
+        return 'Minor issues noted. All features available.';
+      case TrustLevel.warning:
+        return 'Multiple issues reported. Some restrictions may apply.';
+      case TrustLevel.restricted:
+        return restrictionReason ?? 'Account restrictions active due to policy violations.';
     }
   }
 }

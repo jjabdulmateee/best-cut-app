@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
-import '../../data/app_data.dart';
+import '../../data/user_data_provider.dart';
+import '../../data/app_data.dart' show BarberTransaction, BarberTransactionType, BarberTransactionTypeExtension;
 
 class BarberEarningsScreen extends StatefulWidget {
   const BarberEarningsScreen({super.key});
@@ -9,24 +10,47 @@ class BarberEarningsScreen extends StatefulWidget {
 }
 
 class _BarberEarningsScreenState extends State<BarberEarningsScreen> {
-  final AppData _appData = AppData();
+  final _userDataProvider = UserDataProvider();
   int _selectedPeriod = 0; // 0: Today, 1: Week, 2: Month
+
+  @override
+  void initState() {
+    super.initState();
+    _userDataProvider.addListener(_onDataChanged);
+  }
+
+  @override
+  void dispose() {
+    _userDataProvider.removeListener(_onDataChanged);
+    super.dispose();
+  }
+
+  void _onDataChanged() {
+    if (mounted) setState(() {});
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.grey[100],
       body: SafeArea(
-        child: SingleChildScrollView(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _buildHeader(),
-              _buildWalletCard(),
-              _buildEarningsPeriodSelector(),
-              _buildEarningsBreakdown(),
-              _buildTransactionHistory(),
-            ],
+        child: RefreshIndicator(
+          onRefresh: () async {
+            await _userDataProvider.initialize();
+          },
+          child: SingleChildScrollView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _buildHeader(),
+                _buildWalletCard(),
+                _buildEarningsPeriodSelector(),
+                _buildEarningsBreakdown(),
+                _buildTransactionHistory(),
+                const SizedBox(height: 24),
+              ],
+            ),
           ),
         ),
       ),
@@ -80,6 +104,12 @@ class _BarberEarningsScreenState extends State<BarberEarningsScreen> {
   }
 
   Widget _buildWalletCard() {
+    final walletBalance = _userDataProvider.barberWalletBalance;
+    final formattedBalance = walletBalance.toString().replaceAllMapped(
+      RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'),
+      (m) => '${m[1]},'
+    );
+
     return Container(
       margin: const EdgeInsets.all(16),
       padding: const EdgeInsets.all(24),
@@ -92,7 +122,7 @@ class _BarberEarningsScreenState extends State<BarberEarningsScreen> {
         borderRadius: BorderRadius.circular(24),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.2),
+            color: Colors.black.withValues(alpha: 0.2),
             blurRadius: 20,
             offset: const Offset(0, 10),
           ),
@@ -108,13 +138,13 @@ class _BarberEarningsScreenState extends State<BarberEarningsScreen> {
                 'Available Balance',
                 style: TextStyle(
                   fontSize: 14,
-                  color: Colors.white.withOpacity(0.7),
+                  color: Colors.white.withValues(alpha: 0.7),
                 ),
               ),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                 decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.15),
+                  color: Colors.white.withValues(alpha: 0.15),
                   borderRadius: BorderRadius.circular(20),
                 ),
                 child: Row(
@@ -123,15 +153,17 @@ class _BarberEarningsScreenState extends State<BarberEarningsScreen> {
                     Container(
                       width: 8,
                       height: 8,
-                      decoration: const BoxDecoration(
-                        color: Color(0xFF4CAF50),
+                      decoration: BoxDecoration(
+                        color: _userDataProvider.isBarberOnline 
+                            ? const Color(0xFF4CAF50) 
+                            : Colors.grey,
                         shape: BoxShape.circle,
                       ),
                     ),
                     const SizedBox(width: 6),
-                    const Text(
-                      'Active',
-                      style: TextStyle(
+                    Text(
+                      _userDataProvider.isBarberOnline ? 'Online' : 'Offline',
+                      style: const TextStyle(
                         fontSize: 12,
                         color: Colors.white,
                         fontWeight: FontWeight.w500,
@@ -144,10 +176,7 @@ class _BarberEarningsScreenState extends State<BarberEarningsScreen> {
           ),
           const SizedBox(height: 12),
           Text(
-            'PKR ${_appData.barberWalletBalance.toString().replaceAllMapped(
-              RegExp(r'(\d{1,3})(?=(\d{3})+(?!\d))'),
-              (m) => '${m[1]},'
-            )}',
+            'PKR $formattedBalance',
             style: const TextStyle(
               fontSize: 36,
               fontWeight: FontWeight.w800,
@@ -248,17 +277,20 @@ class _BarberEarningsScreenState extends State<BarberEarningsScreen> {
     int earnings;
     switch (_selectedPeriod) {
       case 0:
-        earnings = _appData.todayEarnings;
+        earnings = _userDataProvider.todayEarnings;
         break;
       case 1:
-        earnings = _appData.weekEarnings;
+        earnings = _userDataProvider.weekEarnings;
         break;
       case 2:
-        earnings = _appData.monthEarnings;
+        earnings = _userDataProvider.monthEarnings;
         break;
       default:
         earnings = 0;
     }
+
+    final completedBookings = _userDataProvider.completedBookings.length;
+    final cancelledBookings = _userDataProvider.cancelledBookings.length;
 
     return Container(
       margin: const EdgeInsets.all(16),
@@ -295,7 +327,7 @@ class _BarberEarningsScreenState extends State<BarberEarningsScreen> {
               ),
               _buildEarningsItem(
                 'Completed',
-                '${_appData.barberCompletedBookings.length}',
+                '$completedBookings',
                 Icons.check_circle_outline,
                 const Color(0xFF2196F3),
               ),
@@ -306,7 +338,7 @@ class _BarberEarningsScreenState extends State<BarberEarningsScreen> {
               ),
               _buildEarningsItem(
                 'Cancelled',
-                '${_appData.barberCancelledBookings.length}',
+                '$cancelledBookings',
                 Icons.cancel_outlined,
                 const Color(0xFFFF5722),
               ),
@@ -324,7 +356,7 @@ class _BarberEarningsScreenState extends State<BarberEarningsScreen> {
           width: 44,
           height: 44,
           decoration: BoxDecoration(
-            color: color.withOpacity(0.1),
+            color: color.withValues(alpha: 0.1),
             borderRadius: BorderRadius.circular(12),
           ),
           child: Icon(icon, color: color, size: 22),
@@ -351,7 +383,7 @@ class _BarberEarningsScreenState extends State<BarberEarningsScreen> {
   }
 
   Widget _buildTransactionHistory() {
-    final transactions = _appData.barberTransactions;
+    final transactions = _userDataProvider.barberTransactions;
 
     return Padding(
       padding: const EdgeInsets.all(16),
@@ -382,25 +414,62 @@ class _BarberEarningsScreenState extends State<BarberEarningsScreen> {
             ],
           ),
           const SizedBox(height: 8),
-          Container(
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: ListView.separated(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              itemCount: transactions.length > 5 ? 5 : transactions.length,
-              separatorBuilder: (context, index) => Divider(
-                height: 1,
-                color: Colors.grey[200],
+          if (transactions.isEmpty)
+            Container(
+              padding: const EdgeInsets.all(32),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(16),
               ),
-              itemBuilder: (context, index) {
-                final transaction = transactions[index];
-                return _buildTransactionItem(transaction);
-              },
+              child: Center(
+                child: Column(
+                  children: [
+                    Icon(
+                      Icons.receipt_long_outlined,
+                      size: 48,
+                      color: Colors.grey[400],
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      'No transactions yet',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.grey[600],
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Complete jobs to see your earnings here',
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: Colors.grey[500],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            )
+          else
+            Container(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: ListView.separated(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: transactions.length > 5 ? 5 : transactions.length,
+                separatorBuilder: (context, index) => Divider(
+                  height: 1,
+                  color: Colors.grey[200],
+                ),
+                itemBuilder: (context, index) {
+                  final transaction = transactions[index];
+                  return _buildTransactionItem(transaction);
+                },
+              ),
             ),
-          ),
         ],
       ),
     );
@@ -419,7 +488,7 @@ class _BarberEarningsScreenState extends State<BarberEarningsScreen> {
             width: 44,
             height: 44,
             decoration: BoxDecoration(
-              color: color.withOpacity(0.1),
+              color: color.withValues(alpha: 0.1),
               borderRadius: BorderRadius.circular(12),
             ),
             child: Icon(icon, color: color, size: 20),
@@ -466,6 +535,7 @@ class _BarberEarningsScreenState extends State<BarberEarningsScreen> {
   void _showWithdrawDialog() {
     final amountController = TextEditingController();
     String? selectedMethod;
+    bool isProcessing = false;
 
     showModalBottomSheet(
       context: context,
@@ -503,7 +573,7 @@ class _BarberEarningsScreenState extends State<BarberEarningsScreen> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Available: PKR ${_appData.barberWalletBalance}',
+                  'Available: PKR ${_userDataProvider.barberWalletBalance}',
                   style: TextStyle(
                     fontSize: 14,
                     color: Colors.grey[600],
@@ -591,7 +661,7 @@ class _BarberEarningsScreenState extends State<BarberEarningsScreen> {
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton(
-                    onPressed: () {
+                    onPressed: isProcessing ? null : () async {
                       final amount = int.tryParse(amountController.text) ?? 0;
                       if (amount <= 0) {
                         ScaffoldMessenger.of(context).showSnackBar(
@@ -611,26 +681,43 @@ class _BarberEarningsScreenState extends State<BarberEarningsScreen> {
                         );
                         return;
                       }
+                      if (amount > _userDataProvider.barberWalletBalance) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Insufficient balance'),
+                            backgroundColor: Colors.red,
+                          ),
+                        );
+                        return;
+                      }
+
+                      setModalState(() => isProcessing = true);
                       
-                      final success = _appData.withdrawBarberFunds(
+                      final success = await _userDataProvider.withdrawBarberFunds(
                         amount,
-                        'Withdrawal to $selectedMethod',
+                        'Withdrawal to ${selectedMethod ?? 'Unknown'}',
+                        selectedMethod ?? 'Unknown',
                       );
                       
                       Navigator.pop(context);
                       
                       if (success) {
-                        setState(() {});
                         ScaffoldMessenger.of(context).showSnackBar(
                           SnackBar(
-                            content: Text('PKR $amount withdrawn successfully!'),
+                            content: Row(
+                              children: [
+                                const Icon(Icons.check_circle, color: Colors.white),
+                                const SizedBox(width: 12),
+                                Text('PKR $amount withdrawn successfully!'),
+                              ],
+                            ),
                             backgroundColor: const Color(0xFF4CAF50),
                           ),
                         );
                       } else {
                         ScaffoldMessenger.of(context).showSnackBar(
                           const SnackBar(
-                            content: Text('Insufficient balance'),
+                            content: Text('Withdrawal failed. Please try again.'),
                             backgroundColor: Colors.red,
                           ),
                         );
@@ -638,19 +725,29 @@ class _BarberEarningsScreenState extends State<BarberEarningsScreen> {
                     },
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFF1A1A1A),
+                      disabledBackgroundColor: Colors.grey[400],
                       padding: const EdgeInsets.symmetric(vertical: 16),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(12),
                       ),
                     ),
-                    child: const Text(
-                      'Withdraw',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.white,
-                      ),
-                    ),
+                    child: isProcessing
+                        ? const SizedBox(
+                            height: 20,
+                            width: 20,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        : const Text(
+                            'Withdraw',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.white,
+                            ),
+                          ),
                   ),
                 ),
                 const SizedBox(height: 16),
@@ -662,4 +759,3 @@ class _BarberEarningsScreenState extends State<BarberEarningsScreen> {
     );
   }
 }
-

@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/material.dart';
 import '../data/app_data.dart';
 
 class TimeSlot {
@@ -156,6 +157,9 @@ class Booking {
   final int pricePKR;
   final BookingStatus status;
   final DateTime createdAt;
+  final DateTime? acceptedAt; // When barber accepted the booking
+  final DateTime? startedAt;  // When barber started the job
+  final DateTime? updatedAt;  // Last time booking was updated
   final PaymentMethod? paymentMethod;
   final String? cancellationReason;
   final String? cancelledBy; // 'customer' or 'barber'
@@ -167,6 +171,40 @@ class Booking {
   final double? customerRatingScore; // Customer's trust score
   final int? customerRating; // Rating given by barber after completion
   final String? customerRatingComment;
+  
+  // Booking for family/friend (Uber-like)
+  final bool isBookingForOther;
+  final String? bookedForName;  // Name of person this booking is for
+  final String? bookedForNotes; // Special notes for the booking
+  
+  // Services selected
+  final List<String> selectedServices;
+
+  // Escrow and Dispute Status
+  final EscrowStatus? escrowStatus;
+  final String? disputeId;
+  final DisputeStatus? disputeStatus;
+
+  // ── Booking Engine Fields ──────────────────────────────────────────────────
+  // Phase 1 booking engine: service selection, reschedule tracking, barber switching
+  
+  /// IDs of selected BarberService documents (from barberServices collection)
+  final List<String> serviceIds;
+  
+  /// How many times this booking has been rescheduled (max 2)
+  final int rescheduleCount;
+  
+  /// Whether the barber has been switched (locks rescheduling)
+  final bool barberSwitched;
+  
+  /// Original barber ID before switch (null if never switched)
+  final String? originalBarberId;
+  
+  /// Original price before barber switch (null if never switched)
+  final int? originalPrice;
+  
+  /// Refund amount (set on cancellation)
+  final int? refundAmount;
 
   const Booking({
     required this.id,
@@ -180,6 +218,9 @@ class Booking {
     required this.pricePKR,
     required this.status,
     required this.createdAt,
+    this.acceptedAt,
+    this.startedAt,
+    this.updatedAt,
     this.paymentMethod,
     this.cancellationReason,
     this.cancelledBy,
@@ -190,6 +231,20 @@ class Booking {
     this.customerRatingScore,
     this.customerRating,
     this.customerRatingComment,
+    this.isBookingForOther = false,
+    this.bookedForName,
+    this.bookedForNotes,
+    this.selectedServices = const [],
+    this.escrowStatus,
+    this.disputeId,
+    this.disputeStatus,
+    // Booking engine fields
+    this.serviceIds = const [],
+    this.rescheduleCount = 0,
+    this.barberSwitched = false,
+    this.originalBarberId,
+    this.originalPrice,
+    this.refundAmount,
   });
 
   String get formattedDate {
@@ -212,9 +267,75 @@ class Booking {
       status == BookingStatus.confirmed && 
       bookingDateTime.isAfter(DateTime.now());
 
-  bool get canCancel => 
-      status == BookingStatus.confirmed && 
-      bookingDateTime.isAfter(DateTime.now());
+  bool get canCancel =>
+      status == BookingStatus.confirmed &&
+      bookingDateTime.isAfter(DateTime.now()) &&
+      disputeStatus == null; // Cannot cancel if dispute is open
+
+  // Escrow and Dispute Getters
+  String get escrowStatusText {
+    switch (escrowStatus) {
+      case EscrowStatus.held:
+        return 'Held in Escrow';
+      case EscrowStatus.released:
+        return 'Payment Released';
+      case EscrowStatus.refunded:
+        return 'Payment Refunded';
+      case EscrowStatus.disputed:
+        return 'Payment Disputed';
+      default:
+        return 'Processing';
+    }
+  }
+
+  Color get escrowStatusColor {
+    switch (escrowStatus) {
+      case EscrowStatus.held:
+        return const Color(0xFFFF9800); // Orange
+      case EscrowStatus.released:
+        return const Color(0xFF4CAF50); // Green
+      case EscrowStatus.refunded:
+        return const Color(0xFF2196F3); // Blue
+      case EscrowStatus.disputed:
+        return const Color(0xFFF44336); // Red
+      default:
+        return const Color(0xFF9E9E9E); // Grey
+    }
+  }
+
+  String get disputeStatusText {
+    switch (disputeStatus) {
+      case DisputeStatus.open:
+        return 'Dispute Filed';
+      case DisputeStatus.investigating:
+        return 'Under Investigation';
+      case DisputeStatus.resolved:
+        return 'Dispute Resolved';
+      case DisputeStatus.closed:
+        return 'Dispute Closed';
+      default:
+        return '';
+    }
+  }
+
+  Color get disputeStatusColor {
+    switch (disputeStatus) {
+      case DisputeStatus.open:
+        return const Color(0xFFFF9800); // Orange
+      case DisputeStatus.investigating:
+        return const Color(0xFF2196F3); // Blue
+      case DisputeStatus.resolved:
+        return const Color(0xFF4CAF50); // Green
+      case DisputeStatus.closed:
+        return const Color(0xFF9E9E9E); // Grey
+      default:
+        return const Color(0xFF9E9E9E);
+    }
+  }
+
+  bool get hasActiveDispute => disputeId != null && disputeStatus != DisputeStatus.closed;
+
+  bool get isLockedByDispute => hasActiveDispute;
 
   /// Create Booking from Firestore document data
   factory Booking.fromMap(Map<String, dynamic> map) {
@@ -240,6 +361,33 @@ class Booking {
       createdAt = DateTime.now();
     }
 
+    // Parse acceptedAt from Firestore Timestamp
+    DateTime? acceptedAt;
+    final acceptedAtField = map['acceptedAt'];
+    if (acceptedAtField is Timestamp) {
+      acceptedAt = acceptedAtField.toDate();
+    } else if (acceptedAtField is DateTime) {
+      acceptedAt = acceptedAtField;
+    }
+
+    // Parse startedAt from Firestore Timestamp
+    DateTime? startedAt;
+    final startedAtField = map['startedAt'];
+    if (startedAtField is Timestamp) {
+      startedAt = startedAtField.toDate();
+    } else if (startedAtField is DateTime) {
+      startedAt = startedAtField;
+    }
+
+    // Parse updatedAt from Firestore Timestamp
+    DateTime? updatedAt;
+    final updatedAtField = map['updatedAt'];
+    if (updatedAtField is Timestamp) {
+      updatedAt = updatedAtField.toDate();
+    } else if (updatedAtField is DateTime) {
+      updatedAt = updatedAtField;
+    }
+
     // Parse status
     final statusStr = map['status'] as String? ?? 'pending';
     final status = BookingStatus.values.firstWhere(
@@ -257,28 +405,63 @@ class Booking {
       );
     }
 
+    // Defensive helper: safely convert to int (handles int, double, String)
+    int? _safeInt(dynamic value) {
+      if (value == null) return null;
+      if (value is int) return value;
+      if (value is double) return value.toInt();
+      return int.tryParse(value.toString());
+    }
+
     return Booking(
-      id: map['id'] as String? ?? '',
-      barberId: map['barberId'] as String? ?? '',
-      barberName: map['barberName'] as String? ?? '',
-      shopName: map['shopName'] as String?,
-      barberImageUrl: map['barberImageUrl'] as String? ?? '',
-      barberAddress: map['barberAddress'] as String?,
+      id: (map['id'] ?? '').toString(),
+      barberId: (map['barberId'] ?? '').toString(),
+      barberName: (map['barberName'] ?? '').toString(),
+      shopName: map['shopName']?.toString(),
+      barberImageUrl: (map['barberImageUrl'] ?? '').toString(),
+      barberAddress: map['barberAddress']?.toString(),
       bookingDateTime: bookingDateTime,
-      timeSlot: map['timeSlot'] as String? ?? '',
-      pricePKR: map['pricePKR'] as int? ?? 0,
+      timeSlot: (map['timeSlot'] ?? '').toString(),
+      pricePKR: _safeInt(map['pricePKR']) ?? 0,
       status: status,
       createdAt: createdAt,
+      acceptedAt: acceptedAt,
+      startedAt: startedAt,
+      updatedAt: updatedAt,
       paymentMethod: paymentMethod,
-      cancellationReason: map['cancellationReason'] as String?,
-      cancelledBy: map['cancelledBy'] as String?,
-      rating: map['rating'] as int?,
-      customerId: map['customerId'] as String?,
-      customerName: map['customerName'] as String?,
-      customerImageUrl: map['customerImageUrl'] as String?,
+      cancellationReason: map['cancellationReason']?.toString(),
+      cancelledBy: map['cancelledBy']?.toString(),
+      rating: _safeInt(map['rating']),
+      customerId: map['customerId']?.toString(),
+      customerName: map['customerName']?.toString(),
+      customerImageUrl: map['customerImageUrl']?.toString(),
       customerRatingScore: (map['customerRatingScore'] as num?)?.toDouble(),
-      customerRating: map['customerRating'] as int?,
-      customerRatingComment: map['customerRatingComment'] as String?,
+      customerRating: _safeInt(map['customerRating']),
+      customerRatingComment: map['customerRatingComment']?.toString(),
+      isBookingForOther: map['isBookingForOther'] as bool? ?? false,
+      bookedForName: map['bookedForName']?.toString(),
+      bookedForNotes: map['bookedForNotes']?.toString(),
+      selectedServices: List<String>.from(map['selectedServices'] ?? []),
+      escrowStatus: map['escrowStatus'] != null
+          ? EscrowStatus.values.firstWhere(
+              (s) => s.name == map['escrowStatus'].toString(),
+              orElse: () => EscrowStatus.held,
+            )
+          : null,
+      disputeId: map['disputeId']?.toString(),
+      disputeStatus: map['disputeStatus'] != null
+          ? DisputeStatus.values.firstWhere(
+              (s) => s.name == map['disputeStatus'].toString(),
+              orElse: () => DisputeStatus.open,
+            )
+          : null,
+      // Booking engine fields
+      serviceIds: List<String>.from(map['serviceIds'] ?? []),
+      rescheduleCount: _safeInt(map['rescheduleCount']) ?? 0,
+      barberSwitched: map['barberSwitched'] as bool? ?? false,
+      originalBarberId: map['originalBarberId']?.toString(),
+      originalPrice: _safeInt(map['originalPrice']),
+      refundAmount: _safeInt(map['refundAmount']),
     );
   }
 
@@ -294,6 +477,10 @@ class Booking {
       'timeSlot': timeSlot,
       'pricePKR': pricePKR,
       'status': status.name,
+      'createdAt': Timestamp.fromDate(createdAt),
+      'acceptedAt': acceptedAt != null ? Timestamp.fromDate(acceptedAt!) : null,
+      'startedAt': startedAt != null ? Timestamp.fromDate(startedAt!) : null,
+      'updatedAt': updatedAt != null ? Timestamp.fromDate(updatedAt!) : null,
       'paymentMethod': paymentMethod?.name,
       'cancellationReason': cancellationReason,
       'cancelledBy': cancelledBy,
@@ -304,8 +491,27 @@ class Booking {
       'customerRatingScore': customerRatingScore,
       'customerRating': customerRating,
       'customerRatingComment': customerRatingComment,
+      'isBookingForOther': isBookingForOther,
+      'bookedForName': bookedForName,
+      'bookedForNotes': bookedForNotes,
+      'selectedServices': selectedServices,
+      'escrowStatus': escrowStatus?.name,
+      'disputeId': disputeId,
+      'disputeStatus': disputeStatus?.name,
+      // Booking engine fields
+      'serviceIds': serviceIds,
+      'rescheduleCount': rescheduleCount,
+      'barberSwitched': barberSwitched,
+      'originalBarberId': originalBarberId,
+      'originalPrice': originalPrice,
+      'refundAmount': refundAmount,
     };
   }
+
+  /// Get the name to display for this booking
+  String get displayName => isBookingForOther && bookedForName != null 
+      ? bookedForName! 
+      : customerName ?? 'Customer';
 
   /// Create a copy with updated fields
   Booking copyWith({
@@ -320,6 +526,9 @@ class Booking {
     int? pricePKR,
     BookingStatus? status,
     DateTime? createdAt,
+    DateTime? acceptedAt,
+    DateTime? startedAt,
+    DateTime? updatedAt,
     PaymentMethod? paymentMethod,
     String? cancellationReason,
     String? cancelledBy,
@@ -330,6 +539,19 @@ class Booking {
     double? customerRatingScore,
     int? customerRating,
     String? customerRatingComment,
+    bool? isBookingForOther,
+    String? bookedForName,
+    String? bookedForNotes,
+    List<String>? selectedServices,
+    EscrowStatus? escrowStatus,
+    String? disputeId,
+    DisputeStatus? disputeStatus,
+    List<String>? serviceIds,
+    int? rescheduleCount,
+    bool? barberSwitched,
+    String? originalBarberId,
+    int? originalPrice,
+    int? refundAmount,
   }) {
     return Booking(
       id: id ?? this.id,
@@ -343,6 +565,9 @@ class Booking {
       pricePKR: pricePKR ?? this.pricePKR,
       status: status ?? this.status,
       createdAt: createdAt ?? this.createdAt,
+      acceptedAt: acceptedAt ?? this.acceptedAt,
+      startedAt: startedAt ?? this.startedAt,
+      updatedAt: updatedAt ?? this.updatedAt,
       paymentMethod: paymentMethod ?? this.paymentMethod,
       cancellationReason: cancellationReason ?? this.cancellationReason,
       cancelledBy: cancelledBy ?? this.cancelledBy,
@@ -353,6 +578,19 @@ class Booking {
       customerRatingScore: customerRatingScore ?? this.customerRatingScore,
       customerRating: customerRating ?? this.customerRating,
       customerRatingComment: customerRatingComment ?? this.customerRatingComment,
+      isBookingForOther: isBookingForOther ?? this.isBookingForOther,
+      bookedForName: bookedForName ?? this.bookedForName,
+      bookedForNotes: bookedForNotes ?? this.bookedForNotes,
+      selectedServices: selectedServices ?? this.selectedServices,
+      escrowStatus: escrowStatus ?? this.escrowStatus,
+      disputeId: disputeId ?? this.disputeId,
+      disputeStatus: disputeStatus ?? this.disputeStatus,
+      serviceIds: serviceIds ?? this.serviceIds,
+      rescheduleCount: rescheduleCount ?? this.rescheduleCount,
+      barberSwitched: barberSwitched ?? this.barberSwitched,
+      originalBarberId: originalBarberId ?? this.originalBarberId,
+      originalPrice: originalPrice ?? this.originalPrice,
+      refundAmount: refundAmount ?? this.refundAmount,
     );
   }
 }

@@ -82,6 +82,11 @@ class MockMapProvider implements MapService {
     double latDiff = (marker.position.latitude - userLoc.latitude) * 5000;
     double lngDiff = (marker.position.longitude - userLoc.longitude) * 5000;
 
+    // Marker color based on online status
+    final markerColor = marker.isOnline 
+        ? const Color(0xFF00C853) // Green for online
+        : Colors.grey; // Grey for offline
+
     return Positioned(
       left: 200 + lngDiff, // Simple offset logic for visual mock
       top: 300 - latDiff,
@@ -94,14 +99,36 @@ class MockMapProvider implements MapService {
               decoration: BoxDecoration(
                 color: Colors.white,
                 borderRadius: BorderRadius.circular(4),
-                boxShadow: [BoxShadow(color: Colors.black12, blurRadius: 4)],
+                boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 4)],
+                border: Border.all(
+                  color: marker.isOnline ? const Color(0xFF00C853) : Colors.grey[300]!,
+                  width: 1,
+                ),
               ),
-              child: Text(
-                marker.title,
-                style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 6,
+                    height: 6,
+                    decoration: BoxDecoration(
+                      color: markerColor,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    marker.title,
+                    style: TextStyle(
+                      fontSize: 10, 
+                      fontWeight: FontWeight.bold,
+                      color: marker.isOnline ? Colors.black : Colors.grey[600],
+                    ),
+                  ),
+                ],
               ),
             ),
-            const Icon(Icons.location_on, color: Color(0xFF1A1A1A), size: 30),
+            Icon(Icons.location_on, color: markerColor, size: 30),
           ],
         ),
       ),

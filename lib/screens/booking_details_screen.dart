@@ -1,25 +1,54 @@
 import 'package:flutter/material.dart';
-import '../data/app_data.dart';
 import '../models/slot.dart';
 import '../models/barber.dart';
+import '../services/booking_engine_service.dart';
+import '../services/firestore_service.dart';
+
+// ============================================================================
+// BOOKING DETAILS SCREEN — Phase 1 Booking Engine
+// ============================================================================
+//
+// Shows booking details with three engine actions:
+//   1. Cancel — time-based refund rules (>5h full, 2-5h 80/10/10, ≤2h blocked)
+//   2. Reschedule — max 2, max 30 days, no within 2h, locked after barber switch
+//   3. Switch Barber — price diff handled, locks rescheduling after
+// ============================================================================
 
 class BookingDetailsScreen extends StatefulWidget {
   final Booking booking;
 
-  const BookingDetailsScreen({
-    super.key,
-    required this.booking,
-  });
+  const BookingDetailsScreen({super.key, required this.booking});
 
   @override
   State<BookingDetailsScreen> createState() => _BookingDetailsScreenState();
 }
 
 class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
-  final AppData _appData = AppData();
+  final BookingEngineService _engine = BookingEngineService();
+  final FirestoreService _firestoreService = FirestoreService();
+  late Booking _booking;
+  bool _isLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _booking = widget.booking;
+  }
+
+  /// Refresh booking data from Firestore
+  Future<void> _refreshBooking() async {
+    final fresh = await _engine.getBooking(_booking.id);
+    if (fresh != null && mounted) {
+      setState(() => _booking = fresh);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    final isActive = _booking.status == BookingStatus.confirmed ||
+        _booking.status == BookingStatus.pending;
+    final hoursUntil = _engine.getHoursUntilAppointment(_booking);
+
     return Scaffold(
       backgroundColor: Colors.white,
       appBar: AppBar(
@@ -38,19 +67,6 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
           ),
         ),
         centerTitle: true,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.share_outlined, color: Color(0xFF1A1A1A)),
-            onPressed: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Sharing coming soon!'),
-                  duration: Duration(seconds: 1),
-                ),
-              );
-            },
-          ),
-        ],
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
@@ -65,7 +81,13 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
             _buildBarberCard(),
             const SizedBox(height: 20),
 
-            // Booking details
+            // Services list
+            if (_booking.selectedServices.isNotEmpty) ...[
+              _buildServicesCard(),
+              const SizedBox(height: 20),
+            ],
+
+            // Appointment details
             _buildDetailsCard(),
             const SizedBox(height: 20),
 
@@ -73,21 +95,26 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
             _buildPaymentCard(),
             const SizedBox(height: 20),
 
-            // Cancellation info (if cancelled)
-            if (widget.booking.status.isCancelled) ...[
-              _buildCancellationCard(),
+            // Booking engine info (reschedule/switch status)
+            if (isActive) ...[
+              _buildEngineStatusCard(),
               const SizedBox(height: 20),
             ],
 
-            // Action buttons
-            if (widget.booking.canCancel) ...[
-              _buildActionButtons(),
+            // Cancellation policy
+            _buildCancellationPolicyCard(),
+            const SizedBox(height: 20),
+
+            // Cancellation details (if cancelled)
+            if (_booking.status.isCancelled) ...[
+              _buildCancellationDetailsCard(),
+              const SizedBox(height: 20),
             ],
 
-            // Simulate barber cancel (for testing)
-            if (widget.booking.status == BookingStatus.confirmed) ...[
-              const SizedBox(height: 16),
-              _buildSimulateBarberCancel(),
+            // ── Action Buttons ──
+            if (isActive && hoursUntil > 0) ...[
+              _buildActionButtons(),
+              const SizedBox(height: 20),
             ],
 
             const SizedBox(height: 40),
@@ -97,6 +124,10 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
     );
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // STATUS BANNER
+  // ═══════════════════════════════════════════════════════════════════════════
+
   Widget _buildStatusBanner() {
     Color bgColor;
     Color iconColor;
@@ -104,39 +135,41 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
     String title;
     String subtitle;
 
-    switch (widget.booking.status) {
+    switch (_booking.status) {
       case BookingStatus.confirmed:
-        bgColor = const Color(0xFF00AA5B).withOpacity(0.1);
+        bgColor = const Color(0xFF00AA5B).withValues(alpha: 0.1);
         iconColor = const Color(0xFF00AA5B);
         icon = Icons.check_circle;
         title = 'Booking Confirmed';
-        subtitle = widget.booking.isUpcoming
+        subtitle = _booking.isUpcoming
             ? 'Your appointment is scheduled'
             : 'Waiting for completion';
         break;
       case BookingStatus.completed:
-        bgColor = const Color(0xFF276EF1).withOpacity(0.1);
+        bgColor = const Color(0xFF276EF1).withValues(alpha: 0.1);
         iconColor = const Color(0xFF276EF1);
         icon = Icons.done_all;
         title = 'Completed';
-        subtitle = 'Haircut completed successfully';
+        subtitle = 'Service completed successfully';
         break;
       case BookingStatus.cancelledByCustomer:
-        bgColor = const Color(0xFFFF4444).withOpacity(0.1);
+        bgColor = const Color(0xFFFF4444).withValues(alpha: 0.1);
         iconColor = const Color(0xFFFF4444);
         icon = Icons.cancel;
         title = 'Cancelled by You';
-        subtitle = '50% refunded to your wallet';
+        subtitle = _booking.refundAmount != null
+            ? 'PKR ${_booking.refundAmount} refunded'
+            : 'Booking cancelled';
         break;
       case BookingStatus.cancelledByBarber:
-        bgColor = const Color(0xFFFF4444).withOpacity(0.1);
+        bgColor = const Color(0xFFFF4444).withValues(alpha: 0.1);
         iconColor = const Color(0xFFFF4444);
         icon = Icons.cancel;
         title = 'Cancelled by Barber';
-        subtitle = 'Full amount refunded to your wallet';
+        subtitle = 'Full refund credited to your wallet';
         break;
       case BookingStatus.pending:
-        bgColor = Colors.orange.withOpacity(0.1);
+        bgColor = Colors.orange.withValues(alpha: 0.1);
         iconColor = Colors.orange;
         icon = Icons.hourglass_empty;
         title = 'Pending';
@@ -177,10 +210,7 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
                 const SizedBox(height: 2),
                 Text(
                   subtitle,
-                  style: TextStyle(
-                    fontSize: 13,
-                    color: Colors.grey[600],
-                  ),
+                  style: TextStyle(fontSize: 13, color: Colors.grey[600]),
                 ),
               ],
             ),
@@ -189,6 +219,10 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
       ),
     );
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // BARBER CARD
+  // ═══════════════════════════════════════════════════════════════════════════
 
   Widget _buildBarberCard() {
     return Container(
@@ -210,15 +244,10 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
             child: ClipRRect(
               borderRadius: BorderRadius.circular(14),
               child: Image.network(
-                widget.booking.barberImageUrl,
+                _booking.barberImageUrl,
                 fit: BoxFit.cover,
-                errorBuilder: (context, error, stackTrace) {
-                  return Icon(
-                    Icons.person,
-                    color: Colors.grey[400],
-                    size: 36,
-                  );
-                },
+                errorBuilder: (_, __, ___) =>
+                    Icon(Icons.person, color: Colors.grey[400], size: 36),
               ),
             ),
           ),
@@ -228,45 +257,57 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  widget.booking.barberName,
+                  _booking.barberName,
                   style: const TextStyle(
                     fontSize: 17,
                     fontWeight: FontWeight.w700,
                     color: Color(0xFF1A1A1A),
                   ),
                 ),
-                if (widget.booking.shopName != null) ...[
+                if (_booking.shopName != null) ...[
                   const SizedBox(height: 4),
                   Text(
-                    widget.booking.shopName!,
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: Colors.grey[600],
-                    ),
+                    _booking.shopName!,
+                    style: TextStyle(fontSize: 14, color: Colors.grey[600]),
                   ),
                 ],
-                if (widget.booking.barberAddress != null) ...[
+                if (_booking.barberAddress != null) ...[
                   const SizedBox(height: 6),
                   Row(
                     children: [
-                      Icon(
-                        Icons.location_on_outlined,
-                        size: 14,
-                        color: Colors.grey[500],
-                      ),
+                      Icon(Icons.location_on_outlined,
+                          size: 14, color: Colors.grey[500]),
                       const SizedBox(width: 4),
                       Expanded(
                         child: Text(
-                          widget.booking.barberAddress!,
+                          _booking.barberAddress!,
                           style: TextStyle(
-                            fontSize: 12,
-                            color: Colors.grey[600],
-                          ),
+                              fontSize: 12, color: Colors.grey[600]),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
                       ),
                     ],
+                  ),
+                ],
+                // Barber switched indicator
+                if (_booking.barberSwitched) ...[
+                  const SizedBox(height: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: Colors.blue[50],
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      'Switched from original barber',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.blue[700],
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
                   ),
                 ],
               ],
@@ -276,6 +317,53 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
       ),
     );
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // SERVICES CARD
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  Widget _buildServicesCard() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFAFAFA),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Services',
+            style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF1A1A1A)),
+          ),
+          const SizedBox(height: 12),
+          ...(_booking.selectedServices).map(
+            (name) => Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Row(
+                children: [
+                  const Icon(Icons.check_circle_outline,
+                      size: 18, color: Color(0xFF00AA5B)),
+                  const SizedBox(width: 10),
+                  Text(
+                    name,
+                    style: const TextStyle(fontSize: 14),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // APPOINTMENT DETAILS
+  // ═══════════════════════════════════════════════════════════════════════════
 
   Widget _buildDetailsCard() {
     return Container(
@@ -290,34 +378,42 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
           const Text(
             'Appointment Details',
             style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w700,
-              color: Color(0xFF1A1A1A),
-            ),
+                fontSize: 16,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF1A1A1A)),
           ),
           const SizedBox(height: 16),
           _buildDetailRow(
             icon: Icons.confirmation_number_outlined,
             label: 'Booking ID',
-            value: '#${widget.booking.id.substring(widget.booking.id.length - 6)}',
+            value:
+                '#${_booking.id.length > 6 ? _booking.id.substring(_booking.id.length - 6) : _booking.id}',
           ),
           const SizedBox(height: 14),
           _buildDetailRow(
             icon: Icons.calendar_today_outlined,
             label: 'Date',
-            value: widget.booking.formattedDate,
+            value: _booking.formattedDate,
           ),
           const SizedBox(height: 14),
           _buildDetailRow(
             icon: Icons.access_time,
             label: 'Time',
-            value: widget.booking.timeSlot,
+            value: _booking.timeSlot,
           ),
+          if (_booking.rescheduleCount > 0) ...[
+            const SizedBox(height: 14),
+            _buildDetailRow(
+              icon: Icons.replay,
+              label: 'Rescheduled',
+              value: '${_booking.rescheduleCount} time(s)',
+            ),
+          ],
           const SizedBox(height: 14),
           _buildDetailRow(
             icon: Icons.event_note,
             label: 'Booked On',
-            value: _formatDateTime(widget.booking.createdAt),
+            value: _formatDateTime(_booking.createdAt),
           ),
         ],
       ),
@@ -345,21 +441,15 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                label,
-                style: TextStyle(
-                  fontSize: 12,
-                  color: Colors.grey[500],
-                ),
-              ),
+              Text(label,
+                  style: TextStyle(fontSize: 12, color: Colors.grey[500])),
               const SizedBox(height: 1),
               Text(
                 value,
                 style: const TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: Color(0xFF1A1A1A),
-                ),
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF1A1A1A)),
               ),
             ],
           ),
@@ -367,6 +457,10 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
       ],
     );
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PAYMENT CARD
+  // ═══════════════════════════════════════════════════════════════════════════
 
   Widget _buildPaymentCard() {
     return Container(
@@ -382,99 +476,83 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
           const Text(
             'Payment Summary',
             style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w700,
-              color: Color(0xFF1A1A1A),
-            ),
+                fontSize: 16,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF1A1A1A)),
           ),
           const SizedBox(height: 16),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
+              Text('Service(s)',
+                  style: TextStyle(fontSize: 14, color: Colors.grey[600])),
               Text(
-                'Haircut Service',
-                style: TextStyle(
-                  fontSize: 14,
-                  color: Colors.grey[600],
-                ),
-              ),
-              Text(
-                widget.booking.formattedPrice,
+                _booking.formattedPrice,
                 style: const TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: Color(0xFF1A1A1A),
-                ),
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF1A1A1A)),
               ),
             ],
           ),
-          if (widget.booking.status == BookingStatus.cancelledByCustomer) ...[
+          // Price difference from barber switch
+          if (_booking.barberSwitched && _booking.originalPrice != null) ...[
             const SizedBox(height: 10),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
+                Text('Original price',
+                    style:
+                        TextStyle(fontSize: 13, color: Colors.grey[500])),
                 Text(
-                  'Cancellation Fee (50%)',
+                  'PKR ${_booking.originalPrice}',
                   style: TextStyle(
-                    fontSize: 14,
-                    color: Colors.grey[600],
+                    fontSize: 13,
+                    color: Colors.grey[500],
+                    decoration: TextDecoration.lineThrough,
                   ),
                 ),
+              ],
+            ),
+          ],
+          // Refund info
+          if (_booking.refundAmount != null) ...[
+            const SizedBox(height: 10),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text('Refund',
+                    style: TextStyle(fontSize: 14, color: Colors.green[700])),
                 Text(
-                  '-PKR ${(widget.booking.pricePKR / 2).round()}',
-                  style: const TextStyle(
+                  'PKR ${_booking.refundAmount}',
+                  style: TextStyle(
                     fontSize: 14,
                     fontWeight: FontWeight.w600,
-                    color: Color(0xFFFF4444),
+                    color: Colors.green[700],
                   ),
                 ),
               ],
             ),
           ],
           const SizedBox(height: 14),
-          Container(
-            height: 1,
-            color: const Color(0xFFEEEEEE),
-          ),
+          Container(height: 1, color: const Color(0xFFEEEEEE)),
           const SizedBox(height: 14),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               const Text(
-                'Total Paid',
+                'Total',
                 style: TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.w700,
-                  color: Color(0xFF1A1A1A),
-                ),
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF1A1A1A)),
               ),
               Text(
-                widget.booking.status == BookingStatus.cancelledByCustomer
-                    ? 'PKR ${(widget.booking.pricePKR / 2).round()}'
-                    : widget.booking.formattedPrice,
+                _booking.formattedPrice,
                 style: const TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w700,
-                  color: Color(0xFF1A1A1A),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 14),
-          Row(
-            children: [
-              Icon(
-                Icons.account_balance_wallet,
-                size: 18,
-                color: Colors.grey[600],
-              ),
-              const SizedBox(width: 8),
-              Text(
-                'Paid via ${widget.booking.paymentMethod?.displayName ?? 'Best Cut Wallet'}',
-                style: TextStyle(
-                  fontSize: 13,
-                  color: Colors.grey[600],
-                ),
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF1A1A1A)),
               ),
             ],
           ),
@@ -483,8 +561,171 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
     );
   }
 
-  Widget _buildCancellationCard() {
-    final isByBarber = widget.booking.status == BookingStatus.cancelledByBarber;
+  // ═══════════════════════════════════════════════════════════════════════════
+  // BOOKING ENGINE STATUS (reschedule/switch info)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  Widget _buildEngineStatusCard() {
+    final reschedulePolicy = _engine.getReschedulePolicy(_booking);
+    final cancellationPolicy = _engine.getCancellationPolicy(_booking);
+    final hoursUntil = _engine.getHoursUntilAppointment(_booking);
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.blue[50],
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.blue[200]!),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.info_outline, color: Colors.blue[700], size: 20),
+              const SizedBox(width: 8),
+              Text(
+                'Booking Options',
+                style: TextStyle(
+                  fontWeight: FontWeight.w600,
+                  color: Colors.blue[700],
+                  fontSize: 14,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          // Time until appointment
+          _buildInfoTile(
+            Icons.timer_outlined,
+            'Time until appointment',
+            hoursUntil > 24
+                ? '${hoursUntil ~/ 24} day(s) ${(hoursUntil % 24).toStringAsFixed(0)}h'
+                : '${hoursUntil.toStringAsFixed(1)} hours',
+          ),
+          const SizedBox(height: 8),
+          // Reschedule status
+          _buildInfoTile(
+            Icons.replay,
+            'Reschedule',
+            reschedulePolicy.allowed
+                ? '${reschedulePolicy.remainingReschedules} remaining'
+                : reschedulePolicy.message,
+            isWarning: !reschedulePolicy.allowed,
+          ),
+          const SizedBox(height: 8),
+          // Cancellation status
+          _buildInfoTile(
+            Icons.cancel_outlined,
+            'Cancellation',
+            cancellationPolicy.allowed
+                ? '${cancellationPolicy.refundPercent}% refund'
+                : 'Blocked (within 2h)',
+            isWarning: !cancellationPolicy.allowed,
+          ),
+          if (_booking.barberSwitched) ...[
+            const SizedBox(height: 8),
+            _buildInfoTile(
+              Icons.swap_horiz,
+              'Barber Switch',
+              'Completed — rescheduling locked',
+              isWarning: true,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInfoTile(IconData icon, String label, String value,
+      {bool isWarning = false}) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon,
+            size: 16,
+            color: isWarning ? Colors.orange[700] : Colors.blue[600]),
+        const SizedBox(width: 8),
+        Expanded(
+          child: RichText(
+            text: TextSpan(
+              style: TextStyle(fontSize: 13, color: Colors.grey[700]),
+              children: [
+                TextSpan(
+                  text: '$label: ',
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+                TextSpan(
+                  text: value,
+                  style: TextStyle(
+                    color: isWarning ? Colors.orange[700] : null,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // CANCELLATION POLICY CARD
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  Widget _buildCancellationPolicyCard() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.orange[50],
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.orange[200]!),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.policy_outlined, color: Colors.orange[700], size: 20),
+              const SizedBox(width: 8),
+              Text(
+                'Cancellation & Reschedule Policy',
+                style: TextStyle(
+                  fontWeight: FontWeight.w600,
+                  color: Colors.orange[700],
+                  fontSize: 14,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            '• More than 5 hours before: Full refund (100%)\n'
+            '• 2–5 hours before: 80% refund, 10% barber, 10% platform\n'
+            '• Less than 2 hours: Cancellation blocked\n'
+            '\n'
+            '• Maximum 2 reschedules per booking\n'
+            '• New date must be within 30 days\n'
+            '• No reschedule within 2 hours of appointment\n'
+            '• Switching barber locks rescheduling',
+            style: TextStyle(
+              fontSize: 13,
+              color: Colors.orange[800],
+              height: 1.5,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // CANCELLATION DETAILS (for cancelled bookings)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  Widget _buildCancellationDetailsCard() {
+    final isByBarber =
+        _booking.status == BookingStatus.cancelledByBarber;
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -498,93 +739,37 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
         children: [
           Row(
             children: [
-              const Icon(
-                Icons.info_outline,
-                color: Color(0xFFFF4444),
-                size: 20,
-              ),
+              const Icon(Icons.info_outline,
+                  color: Color(0xFFFF4444), size: 20),
               const SizedBox(width: 8),
               const Text(
                 'Cancellation Details',
                 style: TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.w700,
-                  color: Color(0xFF1A1A1A),
-                ),
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF1A1A1A)),
               ),
             ],
           ),
           const SizedBox(height: 12),
-          if (widget.booking.cancellationReason != null) ...[
+          if (_booking.cancellationReason != null)
             Text(
-              'Reason: ${widget.booking.cancellationReason}',
+              'Reason: ${_booking.cancellationReason}',
+              style: TextStyle(fontSize: 13, color: Colors.grey[700]),
+            ),
+          if (_booking.refundAmount != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              'Refund: PKR ${_booking.refundAmount}',
               style: TextStyle(
-                fontSize: 13,
-                color: Colors.grey[700],
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: Colors.green[700],
               ),
             ),
-            const SizedBox(height: 8),
           ],
-          Text(
-            isByBarber
-                ? 'Full refund of ${widget.booking.formattedPrice} has been credited to your wallet.'
-                : 'PKR ${(widget.booking.pricePKR / 2).round()} has been refunded to your wallet.',
-            style: TextStyle(
-              fontSize: 13,
-              color: Colors.grey[700],
-            ),
-          ),
           if (isByBarber) ...[
             const SizedBox(height: 16),
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Row(
-                children: [
-                  Container(
-                    width: 40,
-                    height: 40,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF276EF1).withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: const Icon(
-                      Icons.support_agent,
-                      color: Color(0xFF276EF1),
-                      size: 22,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'We apologize for the inconvenience',
-                          style: TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                            color: Color(0xFF1A1A1A),
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          'Would you like to book another barber?',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Colors.grey[600],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 12),
             SizedBox(
               width: double.infinity,
               child: ElevatedButton(
@@ -596,17 +781,12 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
                   foregroundColor: Colors.white,
                   padding: const EdgeInsets.symmetric(vertical: 12),
                   shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10),
-                  ),
+                      borderRadius: BorderRadius.circular(10)),
                   elevation: 0,
                 ),
-                child: const Text(
-                  'Find Another Barber',
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
+                child: const Text('Find Another Barber',
+                    style:
+                        TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
               ),
             ),
           ],
@@ -615,94 +795,152 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
     );
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ACTION BUTTONS — Cancel, Reschedule, Switch Barber
+  // ═══════════════════════════════════════════════════════════════════════════
+
   Widget _buildActionButtons() {
+    final cancellationPolicy = _engine.getCancellationPolicy(_booking);
+    final reschedulePolicy = _engine.getReschedulePolicy(_booking);
+
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        SizedBox(
-          width: double.infinity,
-          child: OutlinedButton(
-            onPressed: () => _showCancelDialog(),
-            style: OutlinedButton.styleFrom(
-              foregroundColor: const Color(0xFFFF4444),
-              padding: const EdgeInsets.symmetric(vertical: 14),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-              ),
-              side: const BorderSide(color: Color(0xFFFF4444)),
-            ),
-            child: const Text(
-              'Cancel Booking',
-              style: TextStyle(
-                fontSize: 15,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ),
+        const Text(
+          'Actions',
+          style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w700,
+              color: Color(0xFF1A1A1A)),
+        ),
+        const SizedBox(height: 12),
+
+        // ── Reschedule Button ──
+        _buildActionButton(
+          icon: Icons.replay,
+          label: 'Reschedule Booking',
+          subtitle: reschedulePolicy.allowed
+              ? '${reschedulePolicy.remainingReschedules} reschedule(s) remaining'
+              : reschedulePolicy.message,
+          color: const Color(0xFF276EF1),
+          enabled: reschedulePolicy.allowed,
+          onTap: () => _showRescheduleSheet(),
+        ),
+        const SizedBox(height: 10),
+
+        // ── Switch Barber Button ──
+        _buildActionButton(
+          icon: Icons.swap_horiz,
+          label: 'Switch Barber',
+          subtitle: _booking.barberSwitched
+              ? 'Already switched'
+              : 'Change to a different barber',
+          color: const Color(0xFFFF9800),
+          enabled: !_booking.barberSwitched,
+          onTap: () => _showSwitchBarberSheet(),
+        ),
+        const SizedBox(height: 10),
+
+        // ── Cancel Button ──
+        _buildActionButton(
+          icon: Icons.cancel_outlined,
+          label: 'Cancel Booking',
+          subtitle: cancellationPolicy.allowed
+              ? '${cancellationPolicy.refundPercent}% refund (PKR ${cancellationPolicy.refundAmount})'
+              : cancellationPolicy.message,
+          color: const Color(0xFFFF4444),
+          enabled: cancellationPolicy.allowed,
+          onTap: () => _showCancelSheet(cancellationPolicy),
         ),
       ],
     );
   }
 
-  Widget _buildSimulateBarberCancel() {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.grey[100],
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: Colors.grey[300]!),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.bug_report, size: 16, color: Colors.grey[600]),
-              const SizedBox(width: 8),
-              Text(
-                'Testing Only',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.grey[600],
-                ),
-              ),
-            ],
+  Widget _buildActionButton({
+    required IconData icon,
+    required String label,
+    required String subtitle,
+    required Color color,
+    required bool enabled,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: enabled ? onTap : null,
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: enabled
+              ? color.withValues(alpha: 0.06)
+              : Colors.grey[100],
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: enabled
+                ? color.withValues(alpha: 0.3)
+                : Colors.grey[300]!,
           ),
-          const SizedBox(height: 8),
-          SizedBox(
-            width: double.infinity,
-            child: TextButton(
-              onPressed: () {
-                _appData.cancelBookingByBarber(
-                  widget.booking.id,
-                  'Barber is unavailable due to personal emergency',
-                );
-                setState(() {});
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text(
-                      'Booking cancelled by barber. Full refund of ${widget.booking.formattedPrice} credited.',
-                    ),
-                    backgroundColor: const Color(0xFF276EF1),
-                  ),
-                );
-              },
-              style: TextButton.styleFrom(
-                foregroundColor: Colors.grey[700],
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 42,
+              height: 42,
+              decoration: BoxDecoration(
+                color: enabled
+                    ? color.withValues(alpha: 0.12)
+                    : Colors.grey[200],
+                borderRadius: BorderRadius.circular(10),
               ),
-              child: const Text('Simulate Barber Cancellation'),
+              child: Icon(icon,
+                  color: enabled ? color : Colors.grey[400], size: 22),
             ),
-          ),
-        ],
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    label,
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                      color: enabled
+                          ? const Color(0xFF1A1A1A)
+                          : Colors.grey[500],
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    subtitle,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: enabled ? Colors.grey[600] : Colors.grey[400],
+                    ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            ),
+            if (enabled)
+              Icon(Icons.chevron_right, color: Colors.grey[400], size: 22),
+            if (!enabled)
+              Icon(Icons.lock_outline, color: Colors.grey[400], size: 18),
+          ],
+        ),
       ),
     );
   }
 
-  void _showCancelDialog() {
+  // ═══════════════════════════════════════════════════════════════════════════
+  // CANCEL SHEET
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  void _showCancelSheet(CancellationPolicy policy) {
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
-      builder: (context) => Container(
+      isScrollControlled: true,
+      builder: (ctx) => Container(
         padding: const EdgeInsets.all(24),
         decoration: const BoxDecoration(
           color: Colors.white,
@@ -724,122 +962,719 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
               width: 64,
               height: 64,
               decoration: BoxDecoration(
-                color: const Color(0xFFFF4444).withOpacity(0.1),
+                color: const Color(0xFFFF4444).withValues(alpha: 0.1),
                 shape: BoxShape.circle,
               ),
-              child: const Icon(
-                Icons.warning_amber_rounded,
-                color: Color(0xFFFF4444),
-                size: 32,
-              ),
+              child: const Icon(Icons.warning_amber_rounded,
+                  color: Color(0xFFFF4444), size: 32),
             ),
             const SizedBox(height: 20),
             const Text(
               'Cancel Booking?',
               style: TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.w700,
-                color: Color(0xFF1A1A1A),
-              ),
+                  fontSize: 20,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF1A1A1A)),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 16),
+
+            // Policy details
             Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                color: const Color(0xFFFFF8E6),
+                color: policy.tier == 'full'
+                    ? Colors.green[50]
+                    : Colors.orange[50],
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: const Color(0xFFFFE082)),
+                border: Border.all(
+                  color: policy.tier == 'full'
+                      ? Colors.green[200]!
+                      : Colors.orange[200]!,
+                ),
               ),
-              child: Row(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Icon(
-                    Icons.info_outline,
-                    color: Color(0xFFE6A700),
-                    size: 20,
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      'If you cancel, 50% (PKR ${(widget.booking.pricePKR / 2).round()}) will be charged and 50% will be refunded to your wallet.',
-                      style: TextStyle(
-                        fontSize: 13,
-                        color: Colors.grey[700],
-                        height: 1.4,
+                  Row(
+                    children: [
+                      Icon(
+                        policy.tier == 'full'
+                            ? Icons.check_circle
+                            : Icons.info_outline,
+                        color: policy.tier == 'full'
+                            ? Colors.green[700]
+                            : Colors.orange[700],
+                        size: 20,
                       ),
+                      const SizedBox(width: 8),
+                      Text(
+                        policy.tier == 'full'
+                            ? 'Full Refund'
+                            : 'Partial Refund (80%)',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w600,
+                          color: policy.tier == 'full'
+                              ? Colors.green[700]
+                              : Colors.orange[700],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    policy.message,
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: Colors.grey[700],
+                      height: 1.4,
                     ),
                   ),
                 ],
               ),
             ),
             const SizedBox(height: 24),
+
+            // Buttons
             Row(
               children: [
                 Expanded(
                   child: OutlinedButton(
-                    onPressed: () => Navigator.pop(context),
+                    onPressed: () => Navigator.pop(ctx),
                     style: OutlinedButton.styleFrom(
                       foregroundColor: Colors.grey[700],
                       padding: const EdgeInsets.symmetric(vertical: 14),
                       shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
+                          borderRadius: BorderRadius.circular(12)),
                       side: BorderSide(color: Colors.grey[300]!),
                     ),
-                    child: const Text(
-                      'Keep Booking',
-                      style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
+                    child: const Text('Keep Booking',
+                        style: TextStyle(
+                            fontSize: 15, fontWeight: FontWeight.w600)),
                   ),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
                   child: ElevatedButton(
-                    onPressed: () {
-                      _appData.cancelBookingByCustomer(widget.booking.id);
-                      Navigator.pop(context);
-                      Navigator.pop(context);
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text(
-                            'Booking cancelled. PKR ${(widget.booking.pricePKR / 2).round()} refunded to wallet.',
-                          ),
-                          backgroundColor: const Color(0xFF00AA5B),
-                        ),
-                      );
-                    },
+                    onPressed: _isLoading
+                        ? null
+                        : () async {
+                            setState(() => _isLoading = true);
+                            Navigator.pop(ctx);
+
+                            final result =
+                                await _engine.cancelBooking(_booking.id);
+
+                            if (mounted) {
+                              setState(() => _isLoading = false);
+
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(result.message),
+                                  backgroundColor: result.success
+                                      ? const Color(0xFF00AA5B)
+                                      : const Color(0xFFFF4444),
+                                ),
+                              );
+
+                              if (result.success) {
+                                await _refreshBooking();
+                              }
+                            }
+                          },
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFFFF4444),
                       foregroundColor: Colors.white,
                       padding: const EdgeInsets.symmetric(vertical: 14),
                       shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
+                          borderRadius: BorderRadius.circular(12)),
                       elevation: 0,
                     ),
-                    child: const Text(
-                      'Cancel Booking',
-                      style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
+                    child: const Text('Cancel Booking',
+                        style: TextStyle(
+                            fontSize: 15, fontWeight: FontWeight.w600)),
                   ),
                 ),
               ],
             ),
-            SizedBox(height: MediaQuery.of(context).padding.bottom + 10),
+            SizedBox(height: MediaQuery.of(ctx).padding.bottom + 10),
           ],
         ),
       ),
     );
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // RESCHEDULE SHEET
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  void _showRescheduleSheet() {
+    DateTime selectedDate = DateTime.now().add(const Duration(days: 1));
+    String? selectedSlot;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheetState) {
+          final slots = _generateTimeSlots();
+          return Container(
+            padding: const EdgeInsets.all(24),
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(ctx).size.height * 0.8,
+            ),
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: Colors.grey[300],
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                const Text(
+                  'Reschedule Booking',
+                  style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w700,
+                      color: Color(0xFF1A1A1A)),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '${BookingEngineService.maxReschedules - _booking.rescheduleCount} reschedule(s) remaining. Max ${BookingEngineService.maxForwardDays} days ahead.',
+                  style: TextStyle(fontSize: 13, color: Colors.grey[600]),
+                ),
+                const SizedBox(height: 20),
+
+                // Date picker
+                const Text('Select New Date',
+                    style:
+                        TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+                const SizedBox(height: 10),
+                SizedBox(
+                  height: 80,
+                  child: ListView.builder(
+                    scrollDirection: Axis.horizontal,
+                    itemCount: BookingEngineService.maxForwardDays,
+                    itemBuilder: (_, index) {
+                      final date =
+                          DateTime.now().add(Duration(days: index + 1));
+                      final isSelected =
+                          selectedDate.day == date.day &&
+                              selectedDate.month == date.month &&
+                              selectedDate.year == date.year;
+                      return GestureDetector(
+                        onTap: () => setSheetState(
+                            () => selectedDate = date),
+                        child: Container(
+                          width: 56,
+                          margin: const EdgeInsets.only(right: 10),
+                          decoration: BoxDecoration(
+                            color: isSelected
+                                ? const Color(0xFF1A1A1A)
+                                : Colors.grey[100],
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Text(
+                                _dayAbbr(date.weekday),
+                                style: TextStyle(
+                                    color: isSelected
+                                        ? Colors.white70
+                                        : Colors.grey[600],
+                                    fontSize: 11),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                '${date.day}',
+                                style: TextStyle(
+                                  color: isSelected
+                                      ? Colors.white
+                                      : Colors.black,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 18,
+                                ),
+                              ),
+                              Text(
+                                _monthAbbr(date.month),
+                                style: TextStyle(
+                                    color: isSelected
+                                        ? Colors.white54
+                                        : Colors.grey[500],
+                                    fontSize: 10),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+                const SizedBox(height: 20),
+
+                // Time picker
+                const Text('Select New Time',
+                    style:
+                        TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+                const SizedBox(height: 10),
+                Flexible(
+                  child: GridView.builder(
+                    shrinkWrap: true,
+                    gridDelegate:
+                        const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 4,
+                      childAspectRatio: 2.2,
+                      crossAxisSpacing: 8,
+                      mainAxisSpacing: 8,
+                    ),
+                    itemCount: slots.length,
+                    itemBuilder: (_, i) {
+                      final s = slots[i];
+                      final sel = selectedSlot == s;
+                      return GestureDetector(
+                        onTap: () =>
+                            setSheetState(() => selectedSlot = s),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: sel
+                                ? const Color(0xFF1A1A1A)
+                                : Colors.grey[100],
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Center(
+                            child: Text(
+                              s,
+                              style: TextStyle(
+                                color: sel
+                                    ? Colors.white
+                                    : Colors.black,
+                                fontWeight: FontWeight.w500,
+                                fontSize: 13,
+                              ),
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+                const SizedBox(height: 20),
+
+                // Confirm button
+                SizedBox(
+                  width: double.infinity,
+                  height: 50,
+                  child: ElevatedButton(
+                    onPressed: selectedSlot == null
+                        ? null
+                        : () async {
+                            Navigator.pop(ctx);
+                            setState(() => _isLoading = true);
+
+                            final parts = selectedSlot!.split(':');
+                            final newDt = DateTime(
+                              selectedDate.year,
+                              selectedDate.month,
+                              selectedDate.day,
+                              int.parse(parts[0]),
+                              int.parse(parts[1]),
+                            );
+
+                            final result =
+                                await _engine.rescheduleBooking(
+                              _booking.id,
+                              newDateTime: newDt,
+                              newTimeSlot: selectedSlot!,
+                            );
+
+                            if (mounted) {
+                              setState(() => _isLoading = false);
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(result.message),
+                                  backgroundColor: result.success
+                                      ? const Color(0xFF00AA5B)
+                                      : const Color(0xFFFF4444),
+                                ),
+                              );
+                              if (result.success) {
+                                await _refreshBooking();
+                              }
+                            }
+                          },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF276EF1),
+                      foregroundColor: Colors.white,
+                      disabledBackgroundColor: Colors.grey[300],
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                    ),
+                    child: Text(
+                      selectedSlot != null
+                          ? 'Reschedule to $selectedSlot'
+                          : 'Select a Time',
+                      style: const TextStyle(
+                          fontSize: 16, fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                ),
+                SizedBox(
+                    height: MediaQuery.of(ctx).padding.bottom + 10),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // SWITCH BARBER SHEET
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  void _showSwitchBarberSheet() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (ctx) => _SwitchBarberSheet(
+        currentBooking: _booking,
+        engine: _engine,
+        firestoreService: _firestoreService,
+        onSwitched: (result) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(result.message),
+                backgroundColor: result.success
+                    ? const Color(0xFF00AA5B)
+                    : const Color(0xFFFF4444),
+              ),
+            );
+            if (result.success) {
+              _refreshBooking();
+            }
+          }
+        },
+      ),
+    );
+  }
+
+  // ─────────────────────── Utilities ───────────────────────
+
+  List<String> _generateTimeSlots() {
+    final slots = <String>[];
+    for (int h = 8; h < 22; h++) {
+      slots.add('${h.toString().padLeft(2, '0')}:00');
+      slots.add('${h.toString().padLeft(2, '0')}:30');
+    }
+    return slots;
+  }
+
+  String _dayAbbr(int weekday) {
+    const d = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    return d[weekday - 1];
+  }
+
+  String _monthAbbr(int month) {
+    const m = [
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+    ];
+    return m[month - 1];
+  }
+
   String _formatDateTime(DateTime dt) {
-    final monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    final monthNames = [
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+    ];
     return '${monthNames[dt.month - 1]} ${dt.day}, ${dt.year}';
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// SWITCH BARBER SHEET — Stateful widget for barber list
+// ═══════════════════════════════════════════════════════════════════════════
+
+class _SwitchBarberSheet extends StatefulWidget {
+  final Booking currentBooking;
+  final BookingEngineService engine;
+  final FirestoreService firestoreService;
+  final void Function(BookingEngineResult) onSwitched;
+
+  const _SwitchBarberSheet({
+    required this.currentBooking,
+    required this.engine,
+    required this.firestoreService,
+    required this.onSwitched,
+  });
+
+  @override
+  State<_SwitchBarberSheet> createState() => _SwitchBarberSheetState();
+}
+
+class _SwitchBarberSheetState extends State<_SwitchBarberSheet> {
+  List<Barber> _barbers = [];
+  bool _loading = true;
+  bool _switching = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadBarbers();
+  }
+
+  Future<void> _loadBarbers() async {
+    // Stream first snapshot of approved barbers
+    widget.firestoreService.streamApprovedBarbers().first.then((barbers) {
+      if (mounted) {
+        setState(() {
+          _barbers = barbers
+              .where((b) => b.id != widget.currentBooking.barberId)
+              .toList();
+          _loading = false;
+        });
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.75,
+      ),
+      padding: const EdgeInsets.all(24),
+      decoration: const BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Center(
+            child: Container(
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.grey[300],
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+          const Text(
+            'Switch Barber',
+            style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF1A1A1A)),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Price differences will be adjusted. Rescheduling will be locked after switching.',
+            style: TextStyle(fontSize: 13, color: Colors.grey[600]),
+          ),
+          const SizedBox(height: 16),
+
+          if (_loading)
+            const Center(
+              child: Padding(
+                padding: EdgeInsets.all(40),
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            )
+          else if (_barbers.isEmpty)
+            Center(
+              child: Padding(
+                padding: const EdgeInsets.all(40),
+                child: Text(
+                  'No other barbers available',
+                  style: TextStyle(color: Colors.grey[600]),
+                ),
+              ),
+            )
+          else
+            Flexible(
+              child: ListView.builder(
+                shrinkWrap: true,
+                itemCount: _barbers.length,
+                itemBuilder: (_, i) => _buildBarberTile(_barbers[i]),
+              ),
+            ),
+
+          SizedBox(height: MediaQuery.of(context).padding.bottom + 10),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBarberTile(Barber barber) {
+    final currentPrice = widget.currentBooking.pricePKR;
+    final newPrice = barber.priceStartingPKR.toInt();
+    final diff = newPrice - currentPrice;
+
+    return GestureDetector(
+      onTap: _switching
+          ? null
+          : () => _confirmSwitch(barber, newPrice),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 10),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: Colors.grey[50],
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: Colors.grey[200]!),
+        ),
+        child: Row(
+          children: [
+            CircleAvatar(
+              radius: 26,
+              backgroundImage: NetworkImage(barber.imageUrl),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    barber.name,
+                    style: const TextStyle(
+                        fontWeight: FontWeight.w600, fontSize: 15),
+                  ),
+                  if (barber.shopName != null)
+                    Text(
+                      barber.shopName!,
+                      style:
+                          TextStyle(fontSize: 12, color: Colors.grey[600]),
+                    ),
+                  Row(
+                    children: [
+                      const Icon(Icons.star, size: 14, color: Colors.amber),
+                      const SizedBox(width: 2),
+                      Text(
+                        barber.rating.toStringAsFixed(1),
+                        style: const TextStyle(
+                            fontSize: 12, fontWeight: FontWeight.w600),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Text(
+                  'PKR $newPrice',
+                  style: const TextStyle(
+                      fontWeight: FontWeight.bold, fontSize: 15),
+                ),
+                if (diff != 0)
+                  Text(
+                    diff > 0 ? '+PKR $diff' : '-PKR ${diff.abs()}',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: diff > 0 ? Colors.red : Colors.green,
+                    ),
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _confirmSwitch(Barber barber, int newPrice) {
+    final diff = newPrice - widget.currentBooking.pricePKR;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Text('Switch to ${barber.name}?'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (diff > 0)
+              Text(
+                  'You will be charged an additional PKR $diff.')
+            else if (diff < 0)
+              Text(
+                  'You will receive PKR ${diff.abs()} back.')
+            else
+              const Text('No price change.'),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Colors.orange[50],
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.warning_amber_rounded,
+                      color: Colors.orange[700], size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Rescheduling will be locked after this switch.',
+                      style: TextStyle(
+                          fontSize: 12, color: Colors.orange[800]),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(ctx);
+              setState(() => _switching = true);
+
+              final result = await widget.engine.switchBarber(
+                widget.currentBooking.id,
+                newBarber: barber,
+                newPrice: newPrice,
+              );
+
+              if (mounted) {
+                setState(() => _switching = false);
+                Navigator.pop(context); // Close the sheet
+                widget.onSwitched(result);
+              }
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFFF9800),
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Switch'),
+          ),
+        ],
+      ),
+    );
+  }
+}

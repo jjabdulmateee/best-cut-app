@@ -243,6 +243,35 @@ class BarberProfileScreen extends StatelessWidget {
   }
 
   Widget _buildBookingAction(BuildContext context) {
+    final isBookable = barber.isBookable;
+    final status = barber.availabilityStatus;
+    
+    String buttonText;
+    Color buttonColor;
+    
+    if (isBookable) {
+      buttonText = 'Book Now • ${barber.formattedPrice}';
+      buttonColor = const Color(0xFF1A1A1A);
+    } else {
+      switch (status) {
+        case BarberAvailabilityStatus.offline:
+          buttonText = 'Offline - Schedule for Later';
+          buttonColor = Colors.grey[700]!;
+          break;
+        case BarberAvailabilityStatus.closed:
+          buttonText = 'Closed - Schedule for Later';
+          buttonColor = Colors.grey[700]!;
+          break;
+        case BarberAvailabilityStatus.dayOff:
+          buttonText = 'Day Off - Schedule for Later';
+          buttonColor = Colors.grey[700]!;
+          break;
+        default:
+          buttonText = 'View Available Slots';
+          buttonColor = Colors.grey[700]!;
+      }
+    }
+    
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -256,30 +285,79 @@ class BarberProfileScreen extends StatelessWidget {
         ],
       ),
       child: SafeArea(
-        child: SizedBox(
-          width: double.infinity,
-          height: 55,
-          child: ElevatedButton(
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => BookingScreen(barber: barber),
-                ),
-              );
-            },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.black,
-              foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Status indicator
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              margin: const EdgeInsets.only(bottom: 12),
+              decoration: BoxDecoration(
+                color: barber.statusColor.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 8,
+                    height: 8,
+                    decoration: BoxDecoration(
+                      color: barber.statusColor,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    barber.statusText,
+                    style: TextStyle(
+                      color: barber.statusColor,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 13,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    '•',
+                    style: TextStyle(color: barber.statusColor),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    barber.formattedWorkingHours,
+                    style: TextStyle(
+                      color: barber.statusColor,
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
               ),
             ),
-            child: Text(
-              'Book Now • Rs.${barber.priceStartingPKR}',
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            SizedBox(
+              width: double.infinity,
+              height: 55,
+              child: ElevatedButton(
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => BookingScreen(barber: barber),
+                    ),
+                  );
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: buttonColor,
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                child: Text(
+                  buttonText,
+                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+              ),
             ),
-          ),
+          ],
         ),
       ),
     );

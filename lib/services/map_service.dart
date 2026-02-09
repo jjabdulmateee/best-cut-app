@@ -64,11 +64,13 @@ class BarberMarker {
   final String id;
   final GeoPoint position;
   final String title;
+  final bool isOnline; // For showing different marker colors
 
   const BarberMarker({
     required this.id,
     required this.position,
     required this.title,
+    this.isOnline = false,
   });
 }
 

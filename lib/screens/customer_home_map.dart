@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 import '../models/barber.dart';
 import '../services/firestore_service.dart';
 import '../services/map_service.dart';
@@ -7,6 +6,7 @@ import '../services/location_service.dart';
 import '../services/smart_agent_service.dart';
 import '../widgets/barber_card.dart';
 import 'barber_profile.dart';
+import 'booking_screen.dart';
 
 class CustomerHomeMapScreen extends StatefulWidget {
   const CustomerHomeMapScreen({super.key});
@@ -22,6 +22,7 @@ class _CustomerHomeMapScreenState extends State<CustomerHomeMapScreen> {
   
   GeoPoint? _userLocation;
   bool _isLoadingLocation = true;
+  int _selectedFilter = 0; // 0: All, 1: Online Only
 
   @override
   void initState() {
@@ -51,15 +52,18 @@ class _CustomerHomeMapScreenState extends State<CustomerHomeMapScreen> {
     return Scaffold(
       body: Stack(
         children: [
-          // 1. THE MAP LAYER (Plug & Play Architecture)
+          // 1. THE MAP LAYER - Shows ALL approved barber shops
           StreamBuilder<List<Barber>>(
             stream: _firestoreService.streamApprovedBarbers(),
             builder: (context, snapshot) {
               final barbers = snapshot.data ?? [];
+              
+              // Create markers for ALL shops (online, offline, closed)
               final markers = barbers.map((b) => BarberMarker(
                 id: b.id,
                 position: GeoPoint(b.latitude, b.longitude),
-                title: b.name,
+                title: b.shopName ?? b.name,
+                isOnline: b.isBookable,
               )).toList();
 
               return _mapProvider.buildMap(
@@ -103,7 +107,7 @@ class _CustomerHomeMapScreenState extends State<CustomerHomeMapScreen> {
         borderRadius: BorderRadius.circular(30),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.1),
+            color: Colors.black.withValues(alpha: 0.1),
             blurRadius: 10,
             offset: const Offset(0, 5),
           ),
@@ -155,26 +159,36 @@ class _CustomerHomeMapScreenState extends State<CustomerHomeMapScreen> {
                 return const Center(child: CircularProgressIndicator());
               }
 
+              final allBarbers = snapshot.data ?? [];
+              
               // Use Smart Agent to find best nearby barbers
-              final nearbyBarbers = _agent.findBestBarbers(
-                allBarbers: snapshot.data ?? [],
+              var nearbyBarbers = _agent.findBestBarbers(
+                allBarbers: allBarbers,
                 userLocation: userLoc,
               );
 
-              if (nearbyBarbers.isEmpty) {
-                return _buildNoBarbersState();
+              // Apply filter
+              if (_selectedFilter == 1) {
+                nearbyBarbers = nearbyBarbers.where((b) => b.isBookable).toList();
               }
 
               return ListView.builder(
                 controller: scrollController,
                 padding: const EdgeInsets.all(16),
-                itemCount: nearbyBarbers.length + 1,
+                itemCount: nearbyBarbers.length + 2, // +2 for header and filter
                 itemBuilder: (context, index) {
                   if (index == 0) {
-                    return _buildSheetHeader(nearbyBarbers.length);
+                    return _buildSheetHeader(nearbyBarbers.length, allBarbers.length);
+                  }
+                  if (index == 1) {
+                    return _buildFilterChips(allBarbers);
                   }
                   
-                  final barber = nearbyBarbers[index - 1];
+                  if (nearbyBarbers.isEmpty) {
+                    return _buildNoBarbersState();
+                  }
+                  
+                  final barber = nearbyBarbers[index - 2];
                   double dist = GeoUtils.calculateDistance(
                     userLoc, 
                     GeoPoint(barber.latitude, barber.longitude)
@@ -183,6 +197,15 @@ class _CustomerHomeMapScreenState extends State<CustomerHomeMapScreen> {
                   return BarberCard(
                     barber: barber,
                     distance: GeoUtils.formatDistance(dist),
+                    showBookButton: true,
+                    onBook: barber.isBookable ? () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => BookingScreen(barber: barber),
+                        ),
+                      );
+                    } : null,
                   );
                 },
               );
@@ -193,7 +216,7 @@ class _CustomerHomeMapScreenState extends State<CustomerHomeMapScreen> {
     );
   }
 
-  Widget _buildSheetHeader(int count) {
+  Widget _buildSheetHeader(int count, int totalCount) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -212,38 +235,119 @@ class _CustomerHomeMapScreenState extends State<CustomerHomeMapScreen> {
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
             Text(
-              'Best Barbers Near You',
+              'Barber Shops Near You',
               style: Theme.of(context).textTheme.titleLarge?.copyWith(
                     fontWeight: FontWeight.bold,
                   ),
             ),
             Text(
-              '$count found',
+              '$count of $totalCount',
               style: TextStyle(color: Colors.grey[600], fontSize: 14),
             ),
           ],
         ),
-        const SizedBox(height: 16),
+        const SizedBox(height: 8),
       ],
     );
   }
 
+  Widget _buildFilterChips(List<Barber> allBarbers) {
+    final onlineCount = allBarbers.where((b) => b.isBookable).length;
+    
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            _buildFilterChip('All Shops', 0, null),
+            const SizedBox(width: 8),
+            _buildFilterChip('Open Now', 1, onlineCount),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFilterChip(String label, int index, int? count) {
+    final isSelected = _selectedFilter == index;
+    return GestureDetector(
+      onTap: () {
+        setState(() {
+          _selectedFilter = index;
+        });
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        decoration: BoxDecoration(
+          color: isSelected ? const Color(0xFF1A1A1A) : Colors.grey[100],
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (index == 1)
+              Container(
+                width: 8,
+                height: 8,
+                margin: const EdgeInsets.only(right: 6),
+                decoration: const BoxDecoration(
+                  color: Color(0xFF00C853),
+                  shape: BoxShape.circle,
+                ),
+              ),
+            Text(
+              count != null ? '$label ($count)' : label,
+              style: TextStyle(
+                color: isSelected ? Colors.white : Colors.black,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildNoBarbersState() {
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        Icon(Icons.location_off, size: 60, color: Colors.grey[300]),
-        const SizedBox(height: 16),
-        const Text(
-          'No online barbers in your area',
-          style: TextStyle(fontWeight: FontWeight.w600, fontSize: 16),
-        ),
-        const SizedBox(height: 8),
-        Text(
-          'Try adjusting your search or filters',
-          style: TextStyle(color: Colors.grey[600]),
-        ),
-      ],
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 40),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(
+            _selectedFilter == 1 ? Icons.schedule : Icons.location_off, 
+            size: 60, 
+            color: Colors.grey[300]
+          ),
+          const SizedBox(height: 16),
+          Text(
+            _selectedFilter == 1 
+                ? 'No barbers available right now'
+                : 'No barber shops in your area',
+            style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 16),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            _selectedFilter == 1
+                ? 'Try viewing all shops to schedule for later'
+                : 'Try adjusting your search or filters',
+            style: TextStyle(color: Colors.grey[600]),
+            textAlign: TextAlign.center,
+          ),
+          if (_selectedFilter == 1) ...[
+            const SizedBox(height: 16),
+            TextButton(
+              onPressed: () {
+                setState(() {
+                  _selectedFilter = 0;
+                });
+              },
+              child: const Text('View All Shops'),
+            ),
+          ],
+        ],
+      ),
     );
   }
 }

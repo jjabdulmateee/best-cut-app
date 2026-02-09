@@ -3,6 +3,7 @@ import 'barber_dashboard_screen.dart';
 import 'barber_bookings_screen.dart';
 import 'barber_earnings_screen.dart';
 import 'barber_profile_screen.dart';
+import 'service_management_screen.dart';
 
 class BarberMainNavigation extends StatefulWidget {
   const BarberMainNavigation({super.key});
@@ -16,6 +17,7 @@ class _BarberMainNavigationState extends State<BarberMainNavigation> {
 
   final List<Widget> _screens = [
     const BarberDashboardScreen(),
+    const ServiceManagementScreen(),
     const BarberBookingsScreen(),
     const BarberEarningsScreen(),
     const BarberProfileScreen(),
@@ -45,10 +47,11 @@ class _BarberMainNavigationState extends State<BarberMainNavigation> {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceAround,
               children: [
-                _buildNavItem(0, Icons.dashboard_outlined, Icons.dashboard, 'Dashboard'),
-                _buildNavItem(1, Icons.calendar_today_outlined, Icons.calendar_today, 'Bookings'),
-                _buildNavItem(2, Icons.account_balance_wallet_outlined, Icons.account_balance_wallet, 'Earnings'),
-                _buildNavItem(3, Icons.person_outline, Icons.person, 'Profile'),
+                _buildNavItem(0, Icons.dashboard_outlined, Icons.dashboard, 'Home'),
+                _buildNavItem(1, Icons.content_cut_outlined, Icons.content_cut, 'Services'),
+                _buildNavItem(2, Icons.calendar_today_outlined, Icons.calendar_today, 'Bookings'),
+                _buildNavItem(3, Icons.account_balance_wallet_outlined, Icons.account_balance_wallet, 'Earnings'),
+                _buildNavItem(4, Icons.person_outline, Icons.person, 'Profile'),
               ],
             ),
           ),

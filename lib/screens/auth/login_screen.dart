@@ -43,51 +43,110 @@ class _LoginScreenState extends State<LoginScreen> {
       _errorMessage = null;
     });
 
-    final result = await _authService.signIn(
-      email: _emailController.text.trim(),
-      password: _passwordController.text,
-    );
+    // Use role-checked sign-in when a role is expected (centralized in AuthService).
+    // This ensures a barber can NEVER enter the customer section and vice versa.
+    final AuthResult result;
+    if (widget.expectedRole != null) {
+      result = await _authService.signInWithRoleCheck(
+        email: _emailController.text.trim(),
+        password: _passwordController.text,
+        expectedRole: widget.expectedRole!,
+      );
+    } else {
+      // Fallback for direct login without role context (unlikely in normal flow)
+      result = await _authService.signIn(
+        email: _emailController.text.trim(),
+        password: _passwordController.text,
+      );
+    }
 
     if (!mounted) return;
 
-    if (result.isSuccess && result.userId != null) {
-      // Check if the user's role matches the expected role
-      if (widget.expectedRole != null) {
-        final userData = await _authService.getUserData(result.userId!);
-        if (userData != null) {
-          final userRole = userData['role'] as String?;
-          final expectedRoleName = widget.expectedRole!.name;
-          
-          if (userRole != expectedRoleName) {
-            // Wrong role - sign out and show error
-            await _authService.signOut();
-            setState(() {
-              _isLoading = false;
-              _errorMessage = userRole == 'barber'
-                  ? 'This is a barber account. Please go back and select "Continue as Barber".'
-                  : 'This is a customer account. Please go back and select "Continue as Customer".';
-            });
-            return;
-          }
-        }
-      }
-      
-      // Initialize user data provider
-      await UserDataProvider().initialize();
-      
+    if (result.isSuccess) {
       // Navigate to AuthWrapper which will route to the correct screen
-      if (mounted) {
-        Navigator.of(context).pushAndRemoveUntil(
-          MaterialPageRoute(builder: (_) => const AuthWrapper()),
-          (route) => false,
-        );
-      }
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const AuthWrapper()),
+        (route) => false,
+      );
+    } else if (result.isRoleMismatch) {
+      // Role mismatch — show friendly dialog with navigation to correct section
+      setState(() => _isLoading = false);
+      if (mounted) _showRoleMismatchDialog(result.actualRole!);
     } else {
       setState(() {
         _isLoading = false;
         _errorMessage = result.error;
       });
     }
+  }
+
+  /// Shows a friendly dialog when the user tries to log into the wrong section.
+  /// Offers direct navigation to the correct role section.
+  void _showRoleMismatchDialog(String actualRole) {
+    final isActuallyBarber = actualRole == 'barber';
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.orange[100],
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(Icons.swap_horiz, color: Colors.orange[700]),
+            ),
+            const SizedBox(width: 12),
+            const Expanded(
+              child: Text('Wrong Section', style: TextStyle(fontSize: 18)),
+            ),
+          ],
+        ),
+        content: Text(
+          isActuallyBarber
+              ? 'This account is registered as a Barber.\n\n'
+                'Please use the "Continue as Barber" option to sign in to your barber account.'
+              : 'This account is registered as a Customer.\n\n'
+                'Please use the "Continue as Customer" option to sign in to your customer account.',
+          style: const TextStyle(fontSize: 15, height: 1.5),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(ctx); // Close dialog
+              // Pop back to welcome screen, then push correct role auth screen
+              Navigator.of(context).pushAndRemoveUntil(
+                MaterialPageRoute(
+                  builder: (_) => RoleAuthScreen(
+                    role: isActuallyBarber ? UserRole.barber : UserRole.customer,
+                  ),
+                ),
+                (route) => route.isFirst, // Keep only the welcome screen
+              );
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF1A1A1A),
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8)),
+              elevation: 0,
+            ),
+            child: Text(
+              isActuallyBarber ? 'Go to Barber Login' : 'Go to Customer Login',
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   String? _validateEmail(String? value) {

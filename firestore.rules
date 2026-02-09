@@ -1,4 +1,5 @@
 rules_version = '2';
+
 service cloud.firestore {
   match /databases/{database}/documents {
     
@@ -8,142 +9,259 @@ service cloud.firestore {
     function isAuthenticated() {
       return request.auth != null;
     }
-    
-    // Check if user is admin
+
+    // Check if user is an admin (UID exists in 'admins' collection)
     function isAdmin() {
       return isAuthenticated() && 
-             exists(/databases/$(database)/documents/admins/$(request.auth.uid)) &&
-             get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.isActive == true;
+             exists(/databases/$(database)/documents/admins/$(request.auth.uid));
     }
     
     // Check if user is accessing their own data
     function isOwner(userId) {
       return isAuthenticated() && request.auth.uid == userId;
     }
+
+    // ==================== ADMINS COLLECTION ====================
+    // STRICT: Only admins can read or write to this collection
     
-    // Check if user is a specific role
-    function hasRole(role) {
-      return isAuthenticated() && 
-             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == role;
+    match /admins/{userId} {
+      allow read, write: if isAdmin();
     }
-    
-    // Check if barber is approved
-    function isApprovedBarber() {
-      return isAuthenticated() && 
-             hasRole('barber') &&
-             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status == 'approved';
-    }
-    
-    // ==================== ADMIN COLLECTION ====================
-    
-    match /admins/{adminId} {
-      // Only admins can read admin list (for security)
-      allow read: if isAdmin();
-      // Only existing admins can create new admins (manual bootstrap required)
-      allow write: if isAdmin();
-    }
-    
+
     // ==================== USERS COLLECTION ====================
+    // Every user (customer or barber) has a profile document here.
+    // This is the PRIMARY user store that the app reads on every login.
+    //
+    // WITHOUT these rules, the app cannot read user data after login,
+    // causing infinite loading → "try again or logout" screen.
     
     match /users/{userId} {
-      // Anyone authenticated can read approved barber profiles
-      allow read: if isAuthenticated() && 
-                    (resource.data.role == 'barber' && resource.data.status == 'approved');
-      
-      // Users can read their own data
+      // Users can read their own profile
       allow read: if isOwner(userId);
       
-      // Users can update their own profile (except sensitive fields)
-      allow update: if isOwner(userId) && 
-                      !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'status', 'approvedAt', 'approvedBy', 'rejectedAt', 'rejectedBy']);
+      // Authenticated users can read APPROVED barber profiles (for map/search)
+      allow read: if isAuthenticated() && 
+                    resource.data.role == 'barber' && resource.data.status == 'approved';
       
-      // Only during signup (no existing user doc)
+      // Admins can read all users
+      allow read: if isAdmin();
+      
+      // Users can create their own profile during signup
+      // Role must be either 'customer' or 'barber'
       allow create: if isOwner(userId) && 
                       request.resource.data.role in ['customer', 'barber'];
       
-      // Admins can read ALL users
-      allow read: if isAdmin();
+      // Users can update their own profile EXCEPT sensitive fields
+      // Unapproved barbers cannot set isOnline=true
+      allow update: if isOwner(userId) && 
+                      !request.resource.data.diff(resource.data).affectedKeys()
+                        .hasAny(['role', 'status', 'approvedAt', 'approvedBy', 'rejectedAt', 'rejectedBy']) &&
+                      (resource.data.role != 'barber' || 
+                       resource.data.status == 'approved' || 
+                       request.resource.data.isOnline != true);
       
-      // Admins can update barber status and approval fields
-      allow update: if isAdmin();
+      // Admins have full write access (approve, reject, disable, etc.)
+      allow write: if isAdmin();
       
       // Subcollection: User transactions (wallet)
       match /transactions/{transactionId} {
         allow read: if isOwner(userId);
-        allow create: if isOwner(userId) || isAdmin();
+        allow write: if false; // Cloud Functions ONLY
       }
     }
     
+    // ==================== PHONE REGISTRY ====================
+    // Enforces one-phone-one-account rule.
+    // Document ID = E.164 phone number (e.g. "+923001234567")
+    // Created during signup; immutable after creation.
+    //
+    // WITHOUT these rules, signup fails because the app cannot
+    // check phone uniqueness or register new phone numbers.
+    
+    match /phone_registry/{phoneNumber} {
+      // Any authenticated user can check if a phone is taken (needed during signup)
+      allow read: if isAuthenticated();
+      
+      // Can only create for your own userId (during signup)
+      allow create: if isAuthenticated() && 
+                      request.resource.data.userId == request.auth.uid;
+      
+      // Phone registry entries are immutable — cannot be updated or deleted by users
+      allow update, delete: if false;
+      
+      // Admins have full access (for account management)
+      allow read, write: if isAdmin();
+    }
+
+    // ==================== BARBER APPLICATIONS ====================
+    // Tracks barber onboarding: draft → submitted → underReview → approved/rejected
+    //
+    // Barbers need CREATE (during signup) and limited UPDATE (document uploads,
+    // auto-submit). Without CREATE, barber signup fails.
+    // Without UPDATE, barbers cannot upload documents in the application portal.
+    
+    match /barber_applications/{barberId} {
+      // READ:
+      // 1. Admins have full read access
+      // 2. Barbers can read their own application
+      // 3. Authenticated users can read approved barber applications
+      allow read: if isAdmin() 
+                  || isOwner(barberId)
+                  || (isAuthenticated() && resource.data.status == 'approved');
+
+      // Barbers can create their own application during signup
+      allow create: if isOwner(barberId);
+      
+      // Barbers can update their own application:
+      //  Case 1: Document uploads — no restricted fields touched
+      //  Case 2: Auto-submit — change status to 'submitted' ONLY from
+      //          'draft', 'pending', or 'needMoreDocs'
+      //          (barber CANNOT set status to approved, rejected, underReview, etc.)
+      allow update: if isOwner(barberId) && 
+                      (
+                        // Case 1: Normal document uploads — no restricted fields
+                        !request.resource.data.diff(resource.data).affectedKeys()
+                          .hasAny(['status', 'reviewedBy', 'approvedBy', 'rejectedBy', 'approvedAt', 'rejectedAt'])
+                        ||
+                        // Case 2: Auto-submit after uploading all documents
+                        (
+                          request.resource.data.status == 'submitted' &&
+                          resource.data.status in ['draft', 'pending', 'needMoreDocs'] &&
+                          !request.resource.data.diff(resource.data).affectedKeys()
+                            .hasAny(['reviewedBy', 'approvedBy', 'rejectedBy', 'approvedAt', 'rejectedAt'])
+                        )
+                      );
+      
+      // Admins have full write access (approve, reject, request docs, etc.)
+      allow write: if isAdmin();
+    }
+
+    // ==================== ADMIN LOGS ====================
+    // SERVER-ONLY CREATION (Cloud Functions)
+    
+    match /admin_logs/{logId} {
+      allow read: if isAdmin();
+      allow create: if false; // Cloud Functions ONLY
+      allow update, delete: if false;
+    }
+
     // ==================== BOOKINGS COLLECTION ====================
     
     match /bookings/{bookingId} {
-      // Customers can read their own bookings
       allow read: if isAuthenticated() && 
-                    resource.data.customerId == request.auth.uid;
-      
-      // Approved barbers can read their bookings
-      allow read: if isApprovedBarber() && 
-                    resource.data.barberId == request.auth.uid;
-      
-      // Customers can create bookings
-      allow create: if isAuthenticated() && 
-                      request.resource.data.customerId == request.auth.uid;
-      
-      // Both customer and barber can update their bookings (status changes)
-      allow update: if isAuthenticated() && 
-                      (resource.data.customerId == request.auth.uid || 
-                       resource.data.barberId == request.auth.uid);
-      
-      // Admins have full access
-      allow read, write: if isAdmin();
+                    (isAdmin() || 
+                     resource.data.customerId == request.auth.uid || 
+                     resource.data.barberId == request.auth.uid);
+      // STRICT: Client apps CANNOT write to bookings. Cloud Functions ONLY.
+      allow write: if false; 
     }
-    
-    // ==================== BARBER AVAILABILITY ====================
-    
-    match /barberAvailability/{availabilityId} {
-      // Anyone can read approved barber availability
-      allow read: if isAuthenticated();
-      
-      // Barbers can update their own availability
-      allow write: if isApprovedBarber() && 
-                     request.resource.data.barberId == request.auth.uid;
-      
-      // Admins have full access
-      allow read, write: if isAdmin();
-    }
-    
+
     // ==================== REVIEWS COLLECTION ====================
     
     match /reviews/{reviewId} {
-      // Anyone can read non-hidden reviews
-      allow read: if isAuthenticated() && 
-                    (!resource.data.keys().hasAny(['isHidden']) || resource.data.isHidden == false);
+      allow read: if isAdmin() || resource.data.visibility == 'VISIBLE';
+      allow write: if false; // Cloud Functions ONLY
+    }
+
+    // ==================== WALLETS ====================
+    
+    match /wallets/{userId} {
+      allow read: if isAdmin() || (isAuthenticated() && request.auth.uid == userId);
+      allow write: if false; // Cloud Functions ONLY
+    }
+
+    // ==================== TRANSACTIONS ====================
+    // SERVER-ONLY (Cloud Functions)
+    
+    match /transactions/{txId} {
+      allow read: if isAdmin() || (isAuthenticated() && resource.data.userId == request.auth.uid);
+      allow create: if false; // Cloud Functions ONLY
+      allow update, delete: if false;
+    }
+
+    // ==================== BARBER SERVICES (PRICING & MENU) ====================
+    // Each service document belongs to a single barber (field: barberId).
+    // Barbers can CRUD their own services. Customers can read enabled services.
+    
+    match /barberServices/{serviceId} {
+      // Anyone authenticated can read services (customers need this for booking)
+      allow read: if isAuthenticated();
       
-      // Customers can create reviews for their completed bookings
+      // Barbers can create services under their own barberId
       allow create: if isAuthenticated() && 
-                      request.resource.data.customerId == request.auth.uid;
+                      request.resource.data.barberId == request.auth.uid;
       
-      // Customers can update their own reviews
-      allow update: if isAuthenticated() && 
-                      resource.data.customerId == request.auth.uid &&
-                      !request.resource.data.diff(resource.data).affectedKeys().hasAny(['isHidden', 'hiddenReason']);
+      // Barbers can update/delete only their own services
+      allow update, delete: if isAuthenticated() && 
+                              resource.data.barberId == request.auth.uid;
       
-      // Admins can read all and hide reviews
+      // Admins have full access
       allow read, write: if isAdmin();
     }
+
+    // ==================== SLOTS (BARBER AVAILABILITY) ====================
     
-    // ==================== ADMIN LOGS ====================
+    match /slots/{slotId} {
+      // Anyone authenticated can read slot availability
+      allow read: if isAuthenticated();
+      
+      // Approved barbers can manage their own slots (slotId starts with their uid)
+      allow write: if isAuthenticated() && 
+                     slotId.matches(request.auth.uid + '_.*');
+      
+      // Admins have full access
+      allow read, write: if isAdmin();
+    }
+
+    // ==================== GEO-ZONES ====================
     
-    match /adminLogs/{logId} {
-      // Only admins can read logs
-      allow read: if isAdmin();
-      // Logs are write-only from server/admin functions
+    match /geo_zones/{zoneId} {
+      allow read: if isAuthenticated();
       allow write: if isAdmin();
     }
+
+    // ==================== PLATFORM CONFIGURATION ====================
+    // READ-ONLY for Admin UI. Cloud Functions ONLY for writes.
     
+    match /platform/config {
+      allow read: if isAdmin();
+      allow write: if false; // Cloud Functions ONLY
+      
+      // Config Version History — immutable audit trail
+      match /versions/{versionId} {
+        allow read: if isAdmin();
+        allow create: if false; // Cloud Functions ONLY
+        allow update, delete: if false; // IMMUTABLE
+      }
+    }
+
+    // ==================== NOTIFICATIONS ====================
+    
+    match /notifications/{notificationId} {
+      allow read: if isAdmin();
+      allow write: if isAdmin();
+    }
+
+    // ==================== DISPUTES ====================
+    
+    match /disputes/{disputeId} {
+      allow read: if isAdmin() || 
+                    (isAuthenticated() && 
+                      (request.auth.uid == resource.data.reporterId || 
+                       request.auth.uid == resource.data.targetId));
+      allow write: if false; // Cloud Functions ONLY
+    }
+
+    // ==================== ENFORCEMENT LOGS ====================
+    
+    match /admin_enforcement_logs/{logId} {
+      allow read: if isAdmin();
+      allow write: if false; 
+    }
+
     // ==================== DEFAULT DENY ====================
+    // Deny access to all other collections
     
-    // Deny all other access by default
     match /{document=**} {
       allow read, write: if false;
     }
