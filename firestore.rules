@@ -259,6 +259,16 @@ service cloud.firestore {
       allow write: if false; 
     }
 
+    // ==================== BARBER EARNINGS (Phase 3) ====================
+    // Records of earnings per completed job.
+    // Read: Admin or the barber who earned. Write: Cloud Functions only.
+    
+    match /barber_earnings/{earningId} {
+      allow read: if isAdmin() || 
+                    (isAuthenticated() && resource.data.barberId == request.auth.uid);
+      allow write: if false; // Cloud Functions / BookingEngine ONLY
+    }
+
     // ==================== DEFAULT DENY ====================
     // Deny access to all other collections
     

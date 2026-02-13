@@ -131,18 +131,24 @@ class UserDataProvider extends ChangeNotifier {
     return Barber.fromMap(_userData!);
   }
 
-  // Derived data
+  // Derived data — Phase 3 lifecycle-aware
   List<Booking> get upcomingBookings => _bookings
-      .where((b) => b.status == BookingStatus.confirmed && b.bookingDateTime.isAfter(DateTime.now()))
+      .where((b) => (b.status == BookingStatus.confirmed || b.status == BookingStatus.pending) 
+          && b.bookingDateTime.isAfter(DateTime.now()))
       .toList()
     ..sort((a, b) => a.bookingDateTime.compareTo(b.bookingDateTime));
+
+  /// Bookings currently in progress (barber started)
+  List<Booking> get inProgressBookings => _bookings
+      .where((b) => b.status == BookingStatus.inProgress)
+      .toList();
 
   List<Booking> get completedBookings => _bookings
       .where((b) => b.status == BookingStatus.completed)
       .toList();
 
   List<Booking> get cancelledBookings => _bookings
-      .where((b) => b.status.isCancelled)
+      .where((b) => b.status.isCancelled || b.status == BookingStatus.rejected)
       .toList();
 
   List<Booking> get todayBookings {
@@ -624,27 +630,33 @@ class UserDataProvider extends ChangeNotifier {
       .toList()
     ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
 
-  /// Get active job (confirmed booking that's happening now or today)
+  /// Get active job — Phase 3 lifecycle aware.
+  /// Priority: inProgress > confirmed (today, nearest time)
   Booking? get activeJob {
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
-    
-    // First check for "in progress" bookings
-    final inProgress = _bookings.where((b) => 
+
+    // HIGHEST PRIORITY: Any booking that's currently in progress
+    final liveJobs = _bookings.where((b) => b.status == BookingStatus.inProgress).toList();
+    if (liveJobs.isNotEmpty) {
+      liveJobs.sort((a, b) => a.bookingDateTime.compareTo(b.bookingDateTime));
+      return liveJobs.first;
+    }
+
+    // NEXT: Confirmed bookings for today (accepted, waiting to start)
+    final todayAccepted = _bookings.where((b) => 
       b.status == BookingStatus.confirmed &&
       b.bookingDateTime.year == today.year &&
       b.bookingDateTime.month == today.month &&
       b.bookingDateTime.day == today.day
     ).toList();
     
-    if (inProgress.isEmpty) return null;
+    if (todayAccepted.isEmpty) return null;
     
-    // Sort by time and return the closest one
-    inProgress.sort((a, b) => a.bookingDateTime.compareTo(b.bookingDateTime));
+    todayAccepted.sort((a, b) => a.bookingDateTime.compareTo(b.bookingDateTime));
     
-    // Find the one that's currently active or next upcoming
-    for (var booking in inProgress) {
-      final bookingEnd = booking.bookingDateTime.add(const Duration(minutes: 30));
+    for (var booking in todayAccepted) {
+      final bookingEnd = booking.bookingDateTime.add(const Duration(minutes: 45));
       if (now.isBefore(bookingEnd)) {
         return booking;
       }

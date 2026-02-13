@@ -143,15 +143,23 @@ class _BarberBookingsScreenState extends State<BarberBookingsScreen> with Ticker
     switch (status) {
       case BookingStatus.pending:
         color = Colors.orange;
-        text = 'Pending';
+        text = 'Requested';
         break;
       case BookingStatus.confirmed:
         color = Colors.blue;
-        text = 'Confirmed';
+        text = 'Accepted';
+        break;
+      case BookingStatus.inProgress:
+        color = const Color(0xFF00C853);
+        text = 'In Progress';
         break;
       case BookingStatus.completed:
         color = Colors.green;
         text = 'Completed';
+        break;
+      case BookingStatus.rejected:
+        color = Colors.red;
+        text = 'Rejected';
         break;
       case BookingStatus.cancelledByCustomer:
         color = Colors.red;

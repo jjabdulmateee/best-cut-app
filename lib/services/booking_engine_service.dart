@@ -4,14 +4,16 @@ import '../models/slot.dart';
 import '../models/barber.dart';
 
 // ============================================================================
-// BOOKING ENGINE SERVICE — Phase 1
+// BOOKING ENGINE SERVICE — Phase 1 + Phase 3
 // ============================================================================
 //
-// Handles all booking lifecycle operations with business rules:
-//   1. Booking creation (barberId, serviceIds, appointmentTime, totalPrice)
-//   2. Time-based cancellation (>5h full refund, 2-5h 80/10/10, ≤2h blocked)
-//   3. Rescheduling (max 2, max 30 days forward, no within 2h)
-//   4. Barber switching (price diff handled, locks rescheduling)
+// Phase 1: Booking creation, cancellation, rescheduling, barber switching
+// Phase 3: Accept/Reject, Start/Complete job lifecycle, earnings tracking
+//
+// Lifecycle state machine:
+//   pending → accepted(confirmed) → inProgress → completed
+//   pending → rejected (full refund)
+//   pending/confirmed → cancelledByCustomer / cancelledByBarber
 //
 // All data stored in Firestore `bookings` collection.
 // ============================================================================
@@ -87,6 +89,14 @@ class BookingEngineService {
   static const double partialBarberRate = 0.10;
   static const double partialPlatformRate = 0.10;
 
+  // Phase 3: Earnings split on completion (85% barber, 15% platform)
+  static const double barberEarningsRate = 0.85;
+  static const double platformFeeRate = 0.15;
+
+  // Phase 4: Rerouting limits
+  static const int maxReroutes = 3;
+  static const int assignmentTimeoutMinutes = 30;
+
   // ─────────────────────── Streams ───────────────────────
 
   /// Stream customer's bookings (real-time)
@@ -135,6 +145,7 @@ class BookingEngineService {
     String? bookedForName,
     String? bookedForNotes,
     List<String> selectedServiceNames = const [],
+    String serviceMode = 'shop',
   }) async {
     try {
       final user = _auth.currentUser;
@@ -175,7 +186,7 @@ class BookingEngineService {
         'bookingDateTime': Timestamp.fromDate(appointmentTime),
         'timeSlot': timeSlot,
         'pricePKR': totalPrice,
-        'status': BookingStatus.confirmed.name,
+        'status': BookingStatus.pending.name, // Phase 3: starts as "requested"
         'createdAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
         'paymentMethod': paymentMethod ?? 'wallet',
@@ -193,6 +204,20 @@ class BookingEngineService {
         'originalBarberId': null,
         'originalPrice': null,
         'refundAmount': null,
+        // Phase 3 fields
+        'serviceMode': serviceMode,
+        'rejectedAt': null,
+        'completedAt': null,
+        'barberEarnings': null,
+        'platformFee': null,
+        // Phase 4: Assignment tracking (server-authoritative)
+        'assignedAt': FieldValue.serverTimestamp(),
+        'assignmentExpiresAt': Timestamp.fromDate(
+          DateTime.now().add(const Duration(minutes: assignmentTimeoutMinutes)),
+        ),
+        'assignmentExpired': false,
+        'rerouteCount': 0,
+        'lastAssignmentBarberId': null,
       };
 
       await bookingRef.set(bookingData);
@@ -507,6 +532,373 @@ class BookingEngineService {
     }
   }
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 5. PHASE 3 — BOOKING LIFECYCLE (Accept → Start → Complete)
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /// Barber ACCEPTS a booking request.
+  /// Transition: pending → confirmed (accepted)
+  Future<BookingEngineResult> acceptBooking(String bookingId) async {
+    try {
+      final user = _auth.currentUser;
+      if (user == null) return BookingEngineResult.fail('Not authenticated.');
+
+      final booking = await getBooking(bookingId);
+      if (booking == null) return BookingEngineResult.fail('Booking not found.');
+
+      // Only the assigned barber can accept
+      if (booking.barberId != user.uid) {
+        return BookingEngineResult.fail('Only the assigned barber can accept this booking.');
+      }
+
+      // Must be in pending status
+      if (booking.status != BookingStatus.pending) {
+        return BookingEngineResult.fail(
+            'Cannot accept — booking is ${booking.status.displayName}.');
+      }
+
+      await _firestore.collection('bookings').doc(bookingId).update({
+        'status': BookingStatus.confirmed.name,
+        'acceptedAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+        // Phase 4: Clear assignment expiry — barber responded
+        'assignmentExpired': false,
+      });
+
+      print('✅ BookingEngine: Booking $bookingId accepted');
+      return BookingEngineResult.ok('Booking accepted! Customer has been notified.');
+    } catch (e) {
+      print('❌ BookingEngine.acceptBooking: $e');
+      return BookingEngineResult.fail('Failed to accept booking: $e');
+    }
+  }
+
+  /// Barber REJECTS a booking request.
+  /// Transition: pending → rejected (triggers full refund)
+  Future<BookingEngineResult> rejectBooking(
+    String bookingId, {
+    String reason = 'Barber unavailable',
+  }) async {
+    try {
+      final user = _auth.currentUser;
+      if (user == null) return BookingEngineResult.fail('Not authenticated.');
+
+      final booking = await getBooking(bookingId);
+      if (booking == null) return BookingEngineResult.fail('Booking not found.');
+
+      if (booking.barberId != user.uid) {
+        return BookingEngineResult.fail('Only the assigned barber can reject this booking.');
+      }
+
+      if (booking.status != BookingStatus.pending) {
+        return BookingEngineResult.fail(
+            'Cannot reject — booking is ${booking.status.displayName}.');
+      }
+
+      // Reject with full refund
+      await _firestore.collection('bookings').doc(bookingId).update({
+        'status': BookingStatus.rejected.name,
+        'cancellationReason': reason,
+        'cancelledBy': 'barber',
+        'refundAmount': booking.pricePKR, // Full refund on rejection
+        'rejectedAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+
+      print('✅ BookingEngine: Booking $bookingId rejected (full refund: ${booking.pricePKR})');
+      return BookingEngineResult.ok(
+        'Booking rejected. Full refund of PKR ${booking.pricePKR} will be issued.',
+      );
+    } catch (e) {
+      print('❌ BookingEngine.rejectBooking: $e');
+      return BookingEngineResult.fail('Failed to reject booking: $e');
+    }
+  }
+
+  /// Barber STARTS the job.
+  /// Transition: confirmed → inProgress
+  Future<BookingEngineResult> startJob(String bookingId) async {
+    try {
+      final user = _auth.currentUser;
+      if (user == null) return BookingEngineResult.fail('Not authenticated.');
+
+      final booking = await getBooking(bookingId);
+      if (booking == null) return BookingEngineResult.fail('Booking not found.');
+
+      if (booking.barberId != user.uid) {
+        return BookingEngineResult.fail('Only the assigned barber can start this job.');
+      }
+
+      if (booking.status != BookingStatus.confirmed) {
+        return BookingEngineResult.fail(
+            'Cannot start — booking must be accepted first (current: ${booking.status.displayName}).');
+      }
+
+      await _firestore.collection('bookings').doc(bookingId).update({
+        'status': BookingStatus.inProgress.name,
+        'startedAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+
+      print('✅ BookingEngine: Job $bookingId started');
+      return BookingEngineResult.ok('Job started! The customer has been notified.');
+    } catch (e) {
+      print('❌ BookingEngine.startJob: $e');
+      return BookingEngineResult.fail('Failed to start job: $e');
+    }
+  }
+
+  /// Barber COMPLETES the job.
+  /// Transition: inProgress → completed
+  /// Calculates and stores earnings (85% barber / 15% platform).
+  Future<BookingEngineResult> completeJob(
+    String bookingId, {
+    int? customerRating,
+    String? ratingComment,
+  }) async {
+    try {
+      final user = _auth.currentUser;
+      if (user == null) return BookingEngineResult.fail('Not authenticated.');
+
+      final booking = await getBooking(bookingId);
+      if (booking == null) return BookingEngineResult.fail('Booking not found.');
+
+      if (booking.barberId != user.uid) {
+        return BookingEngineResult.fail('Only the assigned barber can complete this job.');
+      }
+
+      if (booking.status != BookingStatus.inProgress) {
+        return BookingEngineResult.fail(
+            'Cannot complete — job must be in progress first (current: ${booking.status.displayName}).');
+      }
+
+      // Calculate earnings split
+      final barberShare = (booking.pricePKR * barberEarningsRate).round();
+      final platformShare = booking.pricePKR - barberShare;
+
+      // Update booking to completed with earnings
+      final updates = <String, dynamic>{
+        'status': BookingStatus.completed.name,
+        'completedAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+        'barberEarnings': barberShare,
+        'platformFee': platformShare,
+      };
+
+      if (customerRating != null) {
+        updates['customerRating'] = customerRating;
+      }
+      if (ratingComment != null) {
+        updates['customerRatingComment'] = ratingComment;
+      }
+
+      await _firestore.collection('bookings').doc(bookingId).update(updates);
+
+      // Record earnings in barber_earnings collection
+      await _firestore.collection('barber_earnings').add({
+        'bookingId': bookingId,
+        'barberId': booking.barberId,
+        'customerId': booking.customerId,
+        'amount': booking.pricePKR,
+        'barberShare': barberShare,
+        'platformShare': platformShare,
+        'serviceMode': booking.serviceMode,
+        'timestamp': FieldValue.serverTimestamp(),
+      });
+
+      print('✅ BookingEngine: Job $bookingId completed '
+          '(barber: PKR $barberShare, platform: PKR $platformShare)');
+      return BookingEngineResult.ok(
+        'Job completed! You earned PKR $barberShare.',
+      );
+    } catch (e) {
+      print('❌ BookingEngine.completeJob: $e');
+      return BookingEngineResult.fail('Failed to complete job: $e');
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 6. PHASE 4 — SMART REROUTING
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /// Reroute a booking to a new barber.
+  ///
+  /// Rules:
+  ///   - Only the customer can reroute
+  ///   - Booking must be pending + assignmentExpired
+  ///   - Max 3 reroutes per booking
+  ///   - Same booking document, new barber assignment
+  ///   - Escrow untouched
+  Future<BookingEngineResult> rerouteBooking(
+    String bookingId, {
+    required Barber newBarber,
+  }) async {
+    try {
+      final user = _auth.currentUser;
+      if (user == null) return BookingEngineResult.fail('Not authenticated.');
+
+      final booking = await getBooking(bookingId);
+      if (booking == null) return BookingEngineResult.fail('Booking not found.');
+
+      // Only the customer can reroute
+      if (booking.customerId != user.uid) {
+        return BookingEngineResult.fail('Only the booking customer can reroute.');
+      }
+
+      // Must be pending + expired
+      if (booking.status != BookingStatus.pending) {
+        return BookingEngineResult.fail(
+            'Cannot reroute — booking is ${booking.status.displayName}.');
+      }
+
+      if (!booking.assignmentExpired) {
+        return BookingEngineResult.fail(
+            'Cannot reroute — the current barber still has time to respond.');
+      }
+
+      // Max 3 reroutes
+      if (booking.rerouteCount >= maxReroutes) {
+        return BookingEngineResult.fail(
+            'Maximum reroute limit ($maxReroutes) reached. '
+            'You can cancel for a refund.');
+      }
+
+      // Cannot reroute to the same barber
+      if (booking.barberId == newBarber.id) {
+        return BookingEngineResult.fail('Cannot reroute to the same barber.');
+      }
+
+      // Calculate new expiry
+      final expiresAt = DateTime.now().add(
+        const Duration(minutes: assignmentTimeoutMinutes),
+      );
+
+      // Update the SAME booking document — one booking, one escrow, one lifecycle
+      await _firestore.collection('bookings').doc(bookingId).update({
+        // New barber
+        'barberId': newBarber.id,
+        'barberName': newBarber.name,
+        'shopName': newBarber.shopName,
+        'barberImageUrl': newBarber.imageUrl,
+        'barberAddress': newBarber.address,
+        // Assignment tracking
+        'assignedAt': FieldValue.serverTimestamp(),
+        'assignmentExpiresAt': Timestamp.fromDate(expiresAt),
+        'assignmentExpired': false,
+        'rerouteCount': booking.rerouteCount + 1,
+        'lastAssignmentBarberId': booking.barberId,
+        // Keep pending — new barber must accept
+        'status': BookingStatus.pending.name,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+
+      print('✅ BookingEngine: Booking $bookingId rerouted to ${newBarber.id} '
+          '(count: ${booking.rerouteCount + 1}/$maxReroutes)');
+
+      return BookingEngineResult.ok(
+        'Booking sent to ${newBarber.name}. They have $assignmentTimeoutMinutes minutes to respond.',
+      );
+    } catch (e) {
+      print('❌ BookingEngine.rerouteBooking: $e');
+      return BookingEngineResult.fail('Rerouting failed: $e');
+    }
+  }
+
+  /// Stream a single booking in real-time (for customer tracking)
+  Stream<Booking?> streamBooking(String bookingId) {
+    return _firestore
+        .collection('bookings')
+        .doc(bookingId)
+        .snapshots()
+        .map((snap) {
+          if (!snap.exists) return null;
+          final data = snap.data()!;
+          data['id'] = snap.id;
+          return Booking.fromMap(data);
+        });
+  }
+
+  /// Get eligible barbers for rerouting (approved, with matching service mode)
+  Future<List<Barber>> getEligibleBarbersForReroute({
+    required String currentBarberId,
+    String serviceMode = 'shop',
+  }) async {
+    final snap = await _firestore
+        .collection('users')
+        .where('role', isEqualTo: 'barber')
+        .where('status', isEqualTo: 'approved')
+        .get();
+
+    final barbers = <Barber>[];
+    for (final doc in snap.docs) {
+      if (doc.id == currentBarberId) continue; // Exclude current barber
+      final data = doc.data();
+      data['id'] = doc.id;
+      try {
+        final barber = Barber.fromMap(data);
+        // Check service mode compatibility
+        if (isServiceModeValid(barber.barberType, serviceMode)) {
+          barbers.add(barber);
+        }
+      } catch (_) {
+        // Skip barbers with invalid data
+      }
+    }
+
+    // Sort by rating (highest first)
+    barbers.sort((a, b) => b.rating.compareTo(a.rating));
+    return barbers;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 7. PHASE 3 — BARBER STREAMS & QUERIES
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /// Stream barber's bookings (real-time) — used in barber dashboard
+  Stream<List<Booking>> streamBarberBookings(String barberId) {
+    return _firestore
+        .collection('bookings')
+        .where('barberId', isEqualTo: barberId)
+        .orderBy('bookingDateTime', descending: true)
+        .snapshots()
+        .map((snap) => snap.docs.map((doc) {
+              final data = doc.data();
+              data['id'] = doc.id;
+              return Booking.fromMap(data);
+            }).toList());
+  }
+
+  /// Stream barber's earnings (real-time)
+  Stream<List<Map<String, dynamic>>> streamBarberEarnings(String barberId) {
+    return _firestore
+        .collection('barber_earnings')
+        .where('barberId', isEqualTo: barberId)
+        .orderBy('timestamp', descending: true)
+        .snapshots()
+        .map((snap) => snap.docs.map((doc) {
+              final data = doc.data();
+              data['id'] = doc.id;
+              return data;
+            }).toList());
+  }
+
+  /// Get today's earnings for a barber
+  Future<int> getTodayEarnings(String barberId) async {
+    final now = DateTime.now();
+    final startOfDay = DateTime(now.year, now.month, now.day);
+
+    final snap = await _firestore
+        .collection('barber_earnings')
+        .where('barberId', isEqualTo: barberId)
+        .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(startOfDay))
+        .get();
+
+    return snap.docs.fold<int>(
+      0,
+      (sum, doc) => sum + ((doc.data()['barberShare'] as num?)?.toInt() ?? 0),
+    );
+  }
+
   // ─────────────────────── Helpers ───────────────────────
 
   /// Get hours until appointment (for display)
@@ -528,11 +920,25 @@ class BookingEngineService {
             isGreaterThanOrEqualTo: Timestamp.fromDate(startOfDay))
         .where('bookingDateTime',
             isLessThan: Timestamp.fromDate(endOfDay))
-        .where('status', whereIn: ['pending', 'confirmed'])
+        .where('status', whereIn: ['pending', 'confirmed', 'inProgress'])
         .get();
 
     final bookedSlots =
         snap.docs.map((d) => d.data()['timeSlot'] as String).toSet();
     return !bookedSlots.contains(timeSlot);
+  }
+
+  /// Check if service mode is valid for the barber type
+  bool isServiceModeValid(String barberType, String serviceMode) {
+    switch (barberType) {
+      case 'shop_only':
+        return serviceMode == 'shop';
+      case 'doorstep_only':
+        return serviceMode == 'doorstep';
+      case 'both':
+        return serviceMode == 'shop' || serviceMode == 'doorstep';
+      default:
+        return serviceMode == 'shop';
+    }
   }
 }

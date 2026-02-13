@@ -3,9 +3,10 @@ import '../models/slot.dart';
 import '../models/barber.dart';
 import '../services/booking_engine_service.dart';
 import '../services/firestore_service.dart';
+import 'reroute_options_sheet.dart';
 
 // ============================================================================
-// BOOKING DETAILS SCREEN — Phase 1 Booking Engine
+// BOOKING DETAILS SCREEN — Phase 1 + Phase 4 (Smart Rerouting)
 // ============================================================================
 //
 // Shows booking details with three engine actions:
@@ -45,8 +46,7 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final isActive = _booking.status == BookingStatus.confirmed ||
-        _booking.status == BookingStatus.pending;
+    final isActive = _booking.status.isActive;
     final hoursUntil = _engine.getHoursUntilAppointment(_booking);
 
     return Scaffold(
@@ -75,7 +75,26 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
           children: [
             // Status banner
             _buildStatusBanner(),
-            const SizedBox(height: 20),
+            const SizedBox(height: 12),
+
+            // ── Phase 4: Expired Assignment Alert ──
+            if (_booking.needsRerouteDecision) ...[
+              _buildExpiredAssignmentBanner(),
+              const SizedBox(height: 12),
+            ],
+
+            // ── Phase 4: Reroute History ──
+            if (_booking.rerouteCount > 0) ...[
+              _buildRerouteInfoBanner(),
+              const SizedBox(height: 12),
+            ],
+
+            // Lifecycle progress (for active bookings)
+            if (isActive || _booking.status == BookingStatus.completed) ...[
+              _buildCustomerLifecycleProgress(),
+              const SizedBox(height: 12),
+            ],
+            const SizedBox(height: 8),
 
             // Barber card
             _buildBarberCard(),
@@ -105,8 +124,8 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
             _buildCancellationPolicyCard(),
             const SizedBox(height: 20),
 
-            // Cancellation details (if cancelled)
-            if (_booking.status.isCancelled) ...[
+            // Cancellation / rejection details
+            if (_booking.status.isCancelled || _booking.status == BookingStatus.rejected) ...[
               _buildCancellationDetailsCard(),
               const SizedBox(height: 20),
             ],
@@ -136,14 +155,36 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
     String subtitle;
 
     switch (_booking.status) {
+      case BookingStatus.pending:
+        if (_booking.assignmentExpired) {
+          bgColor = Colors.red.withValues(alpha: 0.1);
+          iconColor = Colors.red;
+          icon = Icons.timer_off;
+          title = 'Barber Didn\'t Respond';
+          subtitle = 'Choose what to do next';
+        } else {
+          bgColor = Colors.orange.withValues(alpha: 0.1);
+          iconColor = Colors.orange;
+          icon = Icons.schedule;
+          title = 'Waiting for Barber';
+          subtitle = 'Your request is being reviewed';
+        }
+        break;
       case BookingStatus.confirmed:
         bgColor = const Color(0xFF00AA5B).withValues(alpha: 0.1);
         iconColor = const Color(0xFF00AA5B);
         icon = Icons.check_circle;
-        title = 'Booking Confirmed';
+        title = 'Barber Accepted';
         subtitle = _booking.isUpcoming
             ? 'Your appointment is scheduled'
-            : 'Waiting for completion';
+            : 'Ready to begin';
+        break;
+      case BookingStatus.inProgress:
+        bgColor = const Color(0xFF2196F3).withValues(alpha: 0.1);
+        iconColor = const Color(0xFF2196F3);
+        icon = Icons.play_circle_filled;
+        title = 'In Progress';
+        subtitle = 'Your haircut is happening now';
         break;
       case BookingStatus.completed:
         bgColor = const Color(0xFF276EF1).withValues(alpha: 0.1);
@@ -151,6 +192,15 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
         icon = Icons.done_all;
         title = 'Completed';
         subtitle = 'Service completed successfully';
+        break;
+      case BookingStatus.rejected:
+        bgColor = const Color(0xFFFF4444).withValues(alpha: 0.1);
+        iconColor = const Color(0xFFFF4444);
+        icon = Icons.cancel;
+        title = 'Barber Declined';
+        subtitle = _booking.refundAmount != null
+            ? 'Full refund of PKR ${_booking.refundAmount} issued'
+            : 'Full refund issued to your wallet';
         break;
       case BookingStatus.cancelledByCustomer:
         bgColor = const Color(0xFFFF4444).withValues(alpha: 0.1);
@@ -167,13 +217,6 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
         icon = Icons.cancel;
         title = 'Cancelled by Barber';
         subtitle = 'Full refund credited to your wallet';
-        break;
-      case BookingStatus.pending:
-        bgColor = Colors.orange.withValues(alpha: 0.1);
-        iconColor = Colors.orange;
-        icon = Icons.hourglass_empty;
-        title = 'Pending';
-        subtitle = 'Waiting for confirmation';
         break;
     }
 
@@ -223,6 +266,198 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
   // ═══════════════════════════════════════════════════════════════════════════
   // BARBER CARD
   // ═══════════════════════════════════════════════════════════════════════════
+
+  /// Customer-facing lifecycle progress indicator
+  Widget _buildCustomerLifecycleProgress() {
+    final steps = [
+      ('Requested', Icons.schedule),
+      ('Accepted', Icons.check_circle),
+      ('In Progress', Icons.play_circle_filled),
+      ('Completed', Icons.verified),
+    ];
+    final currentStep = switch (_booking.status) {
+      BookingStatus.pending => 0,
+      BookingStatus.confirmed => 1,
+      BookingStatus.inProgress => 2,
+      BookingStatus.completed => 3,
+      _ => 0,
+    };
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.grey[50],
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Booking Progress',
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Color(0xFF666666)),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: List.generate(steps.length * 2 - 1, (index) {
+              if (index.isOdd) {
+                final stepIdx = index ~/ 2;
+                final isComplete = stepIdx < currentStep;
+                return Expanded(
+                  child: Container(
+                    height: 3,
+                    margin: const EdgeInsets.symmetric(horizontal: 4),
+                    decoration: BoxDecoration(
+                      color: isComplete ? const Color(0xFF00C853) : Colors.grey[300],
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                );
+              }
+              final stepIdx = index ~/ 2;
+              final isComplete = stepIdx <= currentStep;
+              final isCurrent = stepIdx == currentStep;
+
+              return Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: isCurrent ? 32 : 26,
+                    height: isCurrent ? 32 : 26,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: isComplete
+                          ? const Color(0xFF00C853)
+                          : Colors.grey[300],
+                      border: isCurrent
+                          ? Border.all(color: const Color(0xFF00C853), width: 3)
+                          : null,
+                    ),
+                    child: Icon(
+                      steps[stepIdx].$2,
+                      color: isComplete ? Colors.white : Colors.grey[500],
+                      size: isCurrent ? 16 : 14,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    steps[stepIdx].$1,
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: isCurrent ? FontWeight.w700 : FontWeight.w500,
+                      color: isComplete ? const Color(0xFF1A1A1A) : Colors.grey[500],
+                    ),
+                  ),
+                ],
+              );
+            }),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PHASE 4: EXPIRED ASSIGNMENT + REROUTE BANNERS
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  Widget _buildExpiredAssignmentBanner() {
+    return GestureDetector(
+      onTap: () async {
+        final result = await showRerouteOptionsSheet(context, _booking);
+        if (result != null) {
+          _refreshBooking(); // Refresh after any action
+        }
+      },
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [
+              Colors.orange.withValues(alpha: 0.15),
+              Colors.red.withValues(alpha: 0.1),
+            ],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: Colors.orange.withValues(alpha: 0.3)),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 48,
+              height: 48,
+              decoration: BoxDecoration(
+                color: Colors.orange.withValues(alpha: 0.2),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.timer_off, color: Colors.orange, size: 24),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Barber Didn\'t Respond',
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
+                      color: Color(0xFF1A1A1A),
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Tap to choose: find another barber or cancel.',
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: Colors.grey[700],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Icon(Icons.arrow_forward_ios, color: Colors.orange, size: 16),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRerouteInfoBanner() {
+    final reroutesLeft = BookingEngineService.maxReroutes - _booking.rerouteCount;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.blue.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.blue.withValues(alpha: 0.15)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.swap_horiz, color: Colors.blue, size: 18),
+          const SizedBox(width: 10),
+          Text(
+            'Rerouted ${_booking.rerouteCount} time(s)',
+            style: const TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: Color(0xFF1A1A1A),
+            ),
+          ),
+          const Spacer(),
+          Text(
+            '$reroutesLeft left',
+            style: TextStyle(
+              fontSize: 12,
+              color: Colors.grey[600],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   Widget _buildBarberCard() {
     return Container(

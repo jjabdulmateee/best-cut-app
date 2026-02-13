@@ -392,6 +392,25 @@ class CloudFunctionsService {
     return Map<String, dynamic>.from(result.data);
   }
 
+  // ==================== REROUTING OPERATIONS (Phase 4) ====================
+
+  /// Reroute booking to a new barber (customer only)
+  /// Uses the server-side rerouteBooking Cloud Function for atomicity
+  Future<Map<String, dynamic>> rerouteBooking({
+    required String bookingId,
+    required String newBarberId,
+  }) async {
+    final userId = _currentUserId;
+    if (userId == null) throw Exception('User not authenticated');
+
+    final result = await _functions.httpsCallable('rerouteBooking').call({
+      'bookingId': bookingId,
+      'newBarberId': newBarberId,
+    });
+
+    return Map<String, dynamic>.from(result.data);
+  }
+
   // ==================== DISPUTE OPERATIONS ====================
 
   /// Create a dispute for a booking

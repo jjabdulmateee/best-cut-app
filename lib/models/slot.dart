@@ -206,6 +206,40 @@ class Booking {
   /// Refund amount (set on cancellation)
   final int? refundAmount;
 
+  // ── Phase 3: Lifecycle + Barber Type ──────────────────────────────────────
+
+  /// Service mode: 'shop' or 'doorstep'
+  final String serviceMode;
+
+  /// When the barber rejected the booking
+  final DateTime? rejectedAt;
+
+  /// When the job was completed
+  final DateTime? completedAt;
+
+  /// Barber's share of the earnings (set on completion)
+  final int? barberEarnings;
+
+  /// Platform's share (set on completion)
+  final int? platformFee;
+
+  // ── Phase 4: Smart Rerouting ──────────────────────────────────────────────
+
+  /// When the current barber was assigned (set on creation and reroute)
+  final DateTime? assignedAt;
+
+  /// When the current assignment expires (server-set: assignedAt + 30 min)
+  final DateTime? assignmentExpiresAt;
+
+  /// Whether the assignment has expired (set by Cloud Function)
+  final bool assignmentExpired;
+
+  /// How many times this booking has been rerouted (max 3)
+  final int rerouteCount;
+
+  /// The barber who last held the assignment before reroute
+  final String? lastAssignmentBarberId;
+
   const Booking({
     required this.id,
     required this.barberId,
@@ -245,6 +279,18 @@ class Booking {
     this.originalBarberId,
     this.originalPrice,
     this.refundAmount,
+    // Phase 3 fields
+    this.serviceMode = 'shop',
+    this.rejectedAt,
+    this.completedAt,
+    this.barberEarnings,
+    this.platformFee,
+    // Phase 4 rerouting fields
+    this.assignedAt,
+    this.assignmentExpiresAt,
+    this.assignmentExpired = false,
+    this.rerouteCount = 0,
+    this.lastAssignmentBarberId,
   });
 
   String get formattedDate {
@@ -264,13 +310,30 @@ class Booking {
   String get formattedPrice => 'PKR $pricePKR';
 
   bool get isUpcoming => 
-      status == BookingStatus.confirmed && 
+      (status == BookingStatus.confirmed || status == BookingStatus.pending) && 
       bookingDateTime.isAfter(DateTime.now());
 
+  /// Whether the customer can still cancel this booking.
+  /// Cannot cancel once job is in_progress (Phase 3 rule).
   bool get canCancel =>
-      status == BookingStatus.confirmed &&
+      (status == BookingStatus.pending || status == BookingStatus.confirmed) &&
       bookingDateTime.isAfter(DateTime.now()) &&
+      status != BookingStatus.inProgress &&
       disputeStatus == null; // Cannot cancel if dispute is open
+
+  /// Whether the booking is currently a live job
+  bool get isLiveJob =>
+      status == BookingStatus.confirmed || status == BookingStatus.inProgress;
+
+  /// Whether this booking needs customer action due to expired assignment
+  bool get needsRerouteDecision =>
+      status == BookingStatus.pending && assignmentExpired;
+
+  /// Whether rerouting is still allowed (max 3)
+  bool get canReroute => rerouteCount < 3;
+
+  /// Whether the assignment timer has expired (read from server flag only)
+  bool get isAssignmentExpired => assignmentExpired;
 
   // Escrow and Dispute Getters
   String get escrowStatusText {
@@ -388,12 +451,44 @@ class Booking {
       updatedAt = updatedAtField;
     }
 
-    // Parse status
-    final statusStr = map['status'] as String? ?? 'pending';
-    final status = BookingStatus.values.firstWhere(
-      (s) => s.name == statusStr,
-      orElse: () => BookingStatus.pending,
-    );
+    // Parse status (Phase 3: backward-compatible parser)
+    final status = parseBookingStatus(map['status']?.toString());
+
+    // Parse rejectedAt from Firestore Timestamp
+    DateTime? rejectedAt;
+    final rejectedAtField = map['rejectedAt'];
+    if (rejectedAtField is Timestamp) {
+      rejectedAt = rejectedAtField.toDate();
+    } else if (rejectedAtField is DateTime) {
+      rejectedAt = rejectedAtField;
+    }
+
+    // Parse completedAt from Firestore Timestamp
+    DateTime? completedAt;
+    final completedAtField = map['completedAt'];
+    if (completedAtField is Timestamp) {
+      completedAt = completedAtField.toDate();
+    } else if (completedAtField is DateTime) {
+      completedAt = completedAtField;
+    }
+
+    // Parse assignedAt from Firestore Timestamp
+    DateTime? assignedAt;
+    final assignedAtField = map['assignedAt'];
+    if (assignedAtField is Timestamp) {
+      assignedAt = assignedAtField.toDate();
+    } else if (assignedAtField is DateTime) {
+      assignedAt = assignedAtField;
+    }
+
+    // Parse assignmentExpiresAt from Firestore Timestamp
+    DateTime? assignmentExpiresAt;
+    final assignmentExpiresAtField = map['assignmentExpiresAt'];
+    if (assignmentExpiresAtField is Timestamp) {
+      assignmentExpiresAt = assignmentExpiresAtField.toDate();
+    } else if (assignmentExpiresAtField is DateTime) {
+      assignmentExpiresAt = assignmentExpiresAtField;
+    }
 
     // Parse payment method
     PaymentMethod? paymentMethod;
@@ -462,6 +557,18 @@ class Booking {
       originalBarberId: map['originalBarberId']?.toString(),
       originalPrice: _safeInt(map['originalPrice']),
       refundAmount: _safeInt(map['refundAmount']),
+      // Phase 3 fields
+      serviceMode: (map['serviceMode'] ?? 'shop').toString(),
+      rejectedAt: rejectedAt,
+      completedAt: completedAt,
+      barberEarnings: _safeInt(map['barberEarnings']),
+      platformFee: _safeInt(map['platformFee']),
+      // Phase 4 rerouting fields
+      assignedAt: assignedAt,
+      assignmentExpiresAt: assignmentExpiresAt,
+      assignmentExpired: map['assignmentExpired'] as bool? ?? false,
+      rerouteCount: _safeInt(map['rerouteCount']) ?? 0,
+      lastAssignmentBarberId: map['lastAssignmentBarberId']?.toString(),
     );
   }
 
@@ -505,6 +612,18 @@ class Booking {
       'originalBarberId': originalBarberId,
       'originalPrice': originalPrice,
       'refundAmount': refundAmount,
+      // Phase 3 fields
+      'serviceMode': serviceMode,
+      'rejectedAt': rejectedAt != null ? Timestamp.fromDate(rejectedAt!) : null,
+      'completedAt': completedAt != null ? Timestamp.fromDate(completedAt!) : null,
+      'barberEarnings': barberEarnings,
+      'platformFee': platformFee,
+      // Phase 4 rerouting fields
+      'assignedAt': assignedAt != null ? Timestamp.fromDate(assignedAt!) : null,
+      'assignmentExpiresAt': assignmentExpiresAt != null ? Timestamp.fromDate(assignmentExpiresAt!) : null,
+      'assignmentExpired': assignmentExpired,
+      'rerouteCount': rerouteCount,
+      'lastAssignmentBarberId': lastAssignmentBarberId,
     };
   }
 
@@ -552,6 +671,16 @@ class Booking {
     String? originalBarberId,
     int? originalPrice,
     int? refundAmount,
+    String? serviceMode,
+    DateTime? rejectedAt,
+    DateTime? completedAt,
+    int? barberEarnings,
+    int? platformFee,
+    DateTime? assignedAt,
+    DateTime? assignmentExpiresAt,
+    bool? assignmentExpired,
+    int? rerouteCount,
+    String? lastAssignmentBarberId,
   }) {
     return Booking(
       id: id ?? this.id,
@@ -591,14 +720,29 @@ class Booking {
       originalBarberId: originalBarberId ?? this.originalBarberId,
       originalPrice: originalPrice ?? this.originalPrice,
       refundAmount: refundAmount ?? this.refundAmount,
+      serviceMode: serviceMode ?? this.serviceMode,
+      rejectedAt: rejectedAt ?? this.rejectedAt,
+      completedAt: completedAt ?? this.completedAt,
+      barberEarnings: barberEarnings ?? this.barberEarnings,
+      platformFee: platformFee ?? this.platformFee,
+      assignedAt: assignedAt ?? this.assignedAt,
+      assignmentExpiresAt: assignmentExpiresAt ?? this.assignmentExpiresAt,
+      assignmentExpired: assignmentExpired ?? this.assignmentExpired,
+      rerouteCount: rerouteCount ?? this.rerouteCount,
+      lastAssignmentBarberId: lastAssignmentBarberId ?? this.lastAssignmentBarberId,
     );
   }
 }
 
 enum BookingStatus {
-  pending,
-  confirmed,
-  completed,
+  // ── Phase 3 Lifecycle ────────────────────────────────────────────────────
+  // requested → accepted → inProgress → completed
+  // rejected / cancelled handled separately
+  pending,              // Customer created booking (= "Requested")
+  confirmed,            // Barber accepted (= "Accepted")
+  inProgress,           // Barber started the job
+  completed,            // Job finished
+  rejected,             // Barber rejected the request
   cancelledByCustomer,
   cancelledByBarber,
 }
@@ -607,11 +751,15 @@ extension BookingStatusExtension on BookingStatus {
   String get displayName {
     switch (this) {
       case BookingStatus.pending:
-        return 'Pending';
+        return 'Requested';
       case BookingStatus.confirmed:
-        return 'Confirmed';
+        return 'Accepted';
+      case BookingStatus.inProgress:
+        return 'In Progress';
       case BookingStatus.completed:
         return 'Completed';
+      case BookingStatus.rejected:
+        return 'Rejected';
       case BookingStatus.cancelledByCustomer:
         return 'Cancelled';
       case BookingStatus.cancelledByBarber:
@@ -622,11 +770,15 @@ extension BookingStatusExtension on BookingStatus {
   String get description {
     switch (this) {
       case BookingStatus.pending:
-        return 'Waiting for confirmation';
+        return 'Waiting for barber to accept';
       case BookingStatus.confirmed:
-        return 'Your booking is confirmed';
+        return 'Barber accepted — awaiting appointment';
+      case BookingStatus.inProgress:
+        return 'Your haircut is in progress';
       case BookingStatus.completed:
         return 'Haircut completed';
+      case BookingStatus.rejected:
+        return 'Barber declined this request';
       case BookingStatus.cancelledByCustomer:
         return 'You cancelled this booking';
       case BookingStatus.cancelledByBarber:
@@ -637,4 +789,80 @@ extension BookingStatusExtension on BookingStatus {
   bool get isCancelled => 
       this == BookingStatus.cancelledByCustomer || 
       this == BookingStatus.cancelledByBarber;
+
+  /// Whether this status represents an active/live booking
+  bool get isActive =>
+      this == BookingStatus.pending ||
+      this == BookingStatus.confirmed ||
+      this == BookingStatus.inProgress;
+
+  /// Whether the booking is terminal (no further transitions)
+  bool get isTerminal =>
+      this == BookingStatus.completed ||
+      this == BookingStatus.rejected ||
+      isCancelled;
+
+  /// Color for status badges
+  Color get color {
+    switch (this) {
+      case BookingStatus.pending:
+        return const Color(0xFFFF9800); // Orange
+      case BookingStatus.confirmed:
+        return const Color(0xFF2196F3); // Blue
+      case BookingStatus.inProgress:
+        return const Color(0xFF00C853); // Green
+      case BookingStatus.completed:
+        return const Color(0xFF4CAF50); // Green
+      case BookingStatus.rejected:
+        return const Color(0xFFF44336); // Red
+      case BookingStatus.cancelledByCustomer:
+      case BookingStatus.cancelledByBarber:
+        return const Color(0xFFF44336); // Red
+    }
+  }
+
+  /// Icon for this status
+  IconData get icon {
+    switch (this) {
+      case BookingStatus.pending:
+        return Icons.schedule;
+      case BookingStatus.confirmed:
+        return Icons.check_circle;
+      case BookingStatus.inProgress:
+        return Icons.play_circle_filled;
+      case BookingStatus.completed:
+        return Icons.verified;
+      case BookingStatus.rejected:
+        return Icons.cancel;
+      case BookingStatus.cancelledByCustomer:
+      case BookingStatus.cancelledByBarber:
+        return Icons.cancel_outlined;
+    }
+  }
+}
+
+/// Parse BookingStatus from Firestore string with backward compatibility.
+/// Handles both old names (pending/confirmed) and Phase 3 names (requested/accepted/in_progress).
+BookingStatus parseBookingStatus(String? statusStr) {
+  switch (statusStr) {
+    case 'pending':
+    case 'requested':
+      return BookingStatus.pending;
+    case 'confirmed':
+    case 'accepted':
+      return BookingStatus.confirmed;
+    case 'inProgress':
+    case 'in_progress':
+      return BookingStatus.inProgress;
+    case 'completed':
+      return BookingStatus.completed;
+    case 'rejected':
+      return BookingStatus.rejected;
+    case 'cancelledByCustomer':
+      return BookingStatus.cancelledByCustomer;
+    case 'cancelledByBarber':
+      return BookingStatus.cancelledByBarber;
+    default:
+      return BookingStatus.pending;
+  }
 }

@@ -37,6 +37,9 @@ class Barber {
   // Services offered
   final List<String> services;
 
+  // Phase 3: Barber type (shop_only | doorstep_only | both)
+  final String barberType;
+
   Barber({
     required this.id,
     required this.name,
@@ -60,6 +63,7 @@ class Barber {
     this.address,
     this.calculatedDistance,
     this.services = const [],
+    this.barberType = 'shop_only',
   });
 
   String get formattedPrice => 'Rs. ${priceStartingPKR.toInt()}';
@@ -221,6 +225,7 @@ class Barber {
       bio: map['bio']?.toString(),
       address: map['address']?.toString(),
       services: List<String>.from(map['services'] ?? []),
+      barberType: (map['barberType'] ?? 'shop_only').toString(),
     );
   }
 
@@ -247,6 +252,7 @@ class Barber {
       'bio': bio,
       'address': address,
       'services': services,
+      'barberType': barberType,
     };
   }
 
@@ -266,6 +272,7 @@ class Barber {
     int? avgDurationMinutes,
     double? calculatedDistance,
     List<String>? services,
+    String? barberType,
   }) {
     return Barber(
       id: id,
@@ -290,6 +297,7 @@ class Barber {
       address: address ?? this.address,
       calculatedDistance: calculatedDistance ?? this.calculatedDistance,
       services: services ?? this.services,
+      barberType: barberType ?? this.barberType,
     );
   }
 }

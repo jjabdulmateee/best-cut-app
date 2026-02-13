@@ -6,6 +6,7 @@ import '../account/personal_info_screen.dart';
 import '../account/notifications_screen.dart';
 import '../account/help_support_screen.dart';
 import '../account/web_content_screen.dart';
+import 'service_management_screen.dart';
 
 class BarberProfileScreen extends StatefulWidget {
   const BarberProfileScreen({super.key});
@@ -406,7 +407,10 @@ class _BarberProfileScreenState extends State<BarberProfileScreen> {
             Icons.content_cut,
             'Services & Pricing',
             'Manage your services',
-            () => _showComingSoon('Services & Pricing'),
+            () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const ServiceManagementScreen()),
+            ),
           ),
           _buildDivider(),
           _buildMenuItem(

@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import '../models/slot.dart';
 import '../services/booking_engine_service.dart';
 import 'booking_details_screen.dart';
+import 'reroute_options_sheet.dart';
 
 // ============================================================================
 // BOOKING HISTORY SCREEN — Phase 1 Booking Engine
@@ -132,16 +133,14 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen>
 
           final upcoming = allBookings
               .where((b) =>
-                  !b.status.isCancelled &&
-                  b.status != BookingStatus.completed &&
+                  b.status.isActive &&
                   b.bookingDateTime.isAfter(now))
               .toList();
 
           final past = allBookings
               .where((b) =>
-                  b.status.isCancelled ||
-                  b.status == BookingStatus.completed ||
-                  b.bookingDateTime.isBefore(now))
+                  b.status.isTerminal ||
+                  (b.status.isActive && b.bookingDateTime.isBefore(now)))
               .toList();
 
           return TabBarView(
@@ -173,8 +172,7 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen>
   Widget _buildBookingCard(Booking booking) {
     final cancellationPolicy = _engine.getCancellationPolicy(booking);
     final reschedulePolicy = _engine.getReschedulePolicy(booking);
-    final isActive = booking.status == BookingStatus.confirmed ||
-        booking.status == BookingStatus.pending;
+    final isActive = booking.status.isActive;
 
     return GestureDetector(
       onTap: () => _navigateToDetails(booking),
@@ -309,8 +307,41 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen>
                 ],
               ),
             ),
+            // Phase 4: Expired assignment alert on card
+            if (booking.needsRerouteDecision) ...[
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                decoration: BoxDecoration(
+                  color: Colors.orange.withValues(alpha: 0.08),
+                  border: Border(
+                    top: BorderSide(color: Colors.orange.withValues(alpha: 0.2)),
+                  ),
+                ),
+                child: GestureDetector(
+                  onTap: () => showRerouteOptionsSheet(context, booking),
+                  child: const Row(
+                    children: [
+                      Icon(Icons.timer_off, color: Colors.orange, size: 16),
+                      SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Barber didn\'t respond — Tap to choose next step',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.orange,
+                          ),
+                        ),
+                      ),
+                      Icon(Icons.arrow_forward_ios, color: Colors.orange, size: 12),
+                    ],
+                  ),
+                ),
+              ),
+            ],
             // Quick action bar
-            if (isActive && booking.bookingDateTime.isAfter(DateTime.now())) ...[
+            if (isActive && booking.bookingDateTime.isAfter(DateTime.now()) && !booking.needsRerouteDecision) ...[
               Container(height: 1, color: const Color(0xFFF0F0F0)),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -363,22 +394,30 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen>
     Color textColor;
 
     switch (status) {
+      case BookingStatus.pending:
+        bgColor = Colors.orange.withValues(alpha: 0.1);
+        textColor = Colors.orange;
+        break;
       case BookingStatus.confirmed:
         bgColor = const Color(0xFF00AA5B).withValues(alpha: 0.1);
         textColor = const Color(0xFF00AA5B);
+        break;
+      case BookingStatus.inProgress:
+        bgColor = const Color(0xFF2196F3).withValues(alpha: 0.1);
+        textColor = const Color(0xFF2196F3);
         break;
       case BookingStatus.completed:
         bgColor = const Color(0xFF276EF1).withValues(alpha: 0.1);
         textColor = const Color(0xFF276EF1);
         break;
+      case BookingStatus.rejected:
+        bgColor = const Color(0xFFFF4444).withValues(alpha: 0.1);
+        textColor = const Color(0xFFFF4444);
+        break;
       case BookingStatus.cancelledByCustomer:
       case BookingStatus.cancelledByBarber:
         bgColor = const Color(0xFFFF4444).withValues(alpha: 0.1);
         textColor = const Color(0xFFFF4444);
-        break;
-      case BookingStatus.pending:
-        bgColor = Colors.orange.withValues(alpha: 0.1);
-        textColor = Colors.orange;
         break;
     }
 

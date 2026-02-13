@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../data/user_data_provider.dart';
 import '../../models/slot.dart';
+import '../../services/booking_engine_service.dart';
 import '../../services/connectivity_service.dart';
 import '../../services/system_monitor_service.dart';
 import '../../widgets/admin_override_indicator.dart';
@@ -15,6 +16,7 @@ class BarberDashboardScreen extends StatefulWidget {
 
 class _BarberDashboardScreenState extends State<BarberDashboardScreen> {
   final _userDataProvider = UserDataProvider();
+  final _engine = BookingEngineService();
   final _connectivityService = ConnectivityService();
   final _systemMonitor = SystemMonitorService();
   bool _isTogglingOnline = false;
@@ -163,11 +165,18 @@ class _BarberDashboardScreenState extends State<BarberDashboardScreen> {
     final shopName = _userDataProvider.barberShopName;
     final imageUrl = _userDataProvider.barberImageUrl;
     final todayBookings = _userDataProvider.todayBookings;
-    final completedCount = todayBookings.where((b) => b.status == BookingStatus.completed).length;
+    final completedToday = todayBookings.where((b) => b.status == BookingStatus.completed).length;
     final todayEarnings = _userDataProvider.todayEarnings;
-    final pendingRequests = _userDataProvider.pendingBookingRequests;
+    // Phase 4: Filter out expired assignments — they disappear from barber view
+    final pendingRequests = _userDataProvider.pendingBookingRequests
+        .where((b) => !b.assignmentExpired)
+        .toList();
     final upcomingBookings = _userDataProvider.upcomingBookings;
     final activeJob = _userDataProvider.activeJob;
+    final totalCompleted = _userDataProvider.completedBookings.length;
+    final recentHistory = _userDataProvider.completedBookings.take(5).toList()
+      ..addAll(_userDataProvider.cancelledBookings.take(3));
+    recentHistory.sort((a, b) => b.createdAt.compareTo(a.createdAt));
 
     return Scaffold(
       backgroundColor: Colors.grey[100],
@@ -183,20 +192,31 @@ class _BarberDashboardScreenState extends State<BarberDashboardScreen> {
               children: [
                 _buildHeader(barberName, shopName, imageUrl),
                 _buildOnlineToggle(isOnline),
-                
-                // Active Job Card (if any)
+
+                // ── Active Job (highest priority) ──
                 if (activeJob != null) ...[
                   _buildActiveJobCard(activeJob),
                 ],
-                
-                // Incoming Requests (Uber-style)
-                if (isOnline && pendingRequests.isNotEmpty) ...[
+
+                // ── Incoming Requests ──
+                if (pendingRequests.isNotEmpty) ...[
                   _buildIncomingRequests(pendingRequests),
                 ],
-                
-                _buildTodayStats(todayBookings.length, completedCount, todayEarnings),
+
+                // ── Today's Stats ──
+                _buildTodayStats(todayBookings.length, completedToday, todayEarnings, totalCompleted),
+
+                // ── Quick Actions ──
                 _buildQuickActions(),
+
+                // ── Upcoming Jobs ──
                 _buildUpcomingBookings(upcomingBookings),
+
+                // ── Recent Job History ──
+                if (recentHistory.isNotEmpty) ...[
+                  _buildJobHistory(recentHistory.take(5).toList()),
+                ],
+
                 const SizedBox(height: 24),
               ],
             ),
@@ -680,9 +700,24 @@ class _BarberDashboardScreenState extends State<BarberDashboardScreen> {
   }
 
   Widget _buildActiveJobCard(Booking booking) {
-    final now = DateTime.now();
-    final isStarted = booking.bookingDateTime.isBefore(now);
-    
+    final isInProgress = booking.status == BookingStatus.inProgress;
+    final isAccepted = booking.status == BookingStatus.confirmed;
+
+    // Status badge config
+    final Color badgeColor;
+    final IconData badgeIcon;
+    final String badgeLabel;
+
+    if (isInProgress) {
+      badgeColor = const Color(0xFF00C853);
+      badgeIcon = Icons.play_circle_filled;
+      badgeLabel = 'IN PROGRESS';
+    } else {
+      badgeColor = const Color(0xFF2196F3);
+      badgeIcon = Icons.schedule;
+      badgeLabel = 'ACCEPTED';
+    }
+
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 16),
       padding: const EdgeInsets.all(20),
@@ -700,25 +735,22 @@ class _BarberDashboardScreenState extends State<BarberDashboardScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // ── Status Badge + Time ──
           Row(
             children: [
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                 decoration: BoxDecoration(
-                  color: isStarted ? const Color(0xFF00C853) : const Color(0xFF2196F3),
+                  color: badgeColor,
                   borderRadius: BorderRadius.circular(20),
                 ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(
-                      isStarted ? Icons.play_circle_filled : Icons.schedule,
-                      color: Colors.white,
-                      size: 16,
-                    ),
+                    Icon(badgeIcon, color: Colors.white, size: 16),
                     const SizedBox(width: 6),
                     Text(
-                      isStarted ? 'IN PROGRESS' : 'UPCOMING',
+                      badgeLabel,
                       style: const TextStyle(
                         color: Colors.white,
                         fontSize: 12,
@@ -729,21 +761,42 @@ class _BarberDashboardScreenState extends State<BarberDashboardScreen> {
                   ],
                 ),
               ),
+              if (booking.serviceMode == 'doorstep') ...[
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.orange,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.directions_car, color: Colors.white, size: 12),
+                      SizedBox(width: 4),
+                      Text('DOORSTEP', style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.w700)),
+                    ],
+                  ),
+                ),
+              ],
               const Spacer(),
               Text(
                 booking.timeSlot,
-                style: const TextStyle(
-                  color: Colors.white70,
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                ),
+                style: const TextStyle(color: Colors.white70, fontSize: 14, fontWeight: FontWeight.w600),
               ),
             ],
           ),
+
+          const SizedBox(height: 12),
+
+          // ── Lifecycle Progress ──
+          _buildLifecycleProgress(booking.status),
+
           const SizedBox(height: 16),
+
+          // ── Customer Info ──
           Row(
             children: [
-              // Customer avatar
               Container(
                 width: 50,
                 height: 50,
@@ -751,10 +804,7 @@ class _BarberDashboardScreenState extends State<BarberDashboardScreen> {
                   borderRadius: BorderRadius.circular(14),
                   color: Colors.grey[800],
                   image: booking.customerImageUrl != null && booking.customerImageUrl!.isNotEmpty
-                      ? DecorationImage(
-                          image: NetworkImage(booking.customerImageUrl!),
-                          fit: BoxFit.cover,
-                        )
+                      ? DecorationImage(image: NetworkImage(booking.customerImageUrl!), fit: BoxFit.cover)
                       : null,
                 ),
                 child: booking.customerImageUrl == null || booking.customerImageUrl!.isEmpty
@@ -767,49 +817,34 @@ class _BarberDashboardScreenState extends State<BarberDashboardScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      booking.customerName ?? 'Customer',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 18,
-                        fontWeight: FontWeight.w600,
-                      ),
+                      booking.displayName,
+                      style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600),
                     ),
-                    if (booking.customerRatingScore != null)
-                      Row(
-                        children: [
-                          const Icon(Icons.star, color: Color(0xFFFFB800), size: 14),
-                          const SizedBox(width: 4),
-                          Text(
-                            booking.customerRatingScore!.toStringAsFixed(1),
-                            style: const TextStyle(
-                              color: Colors.white70,
-                              fontSize: 13,
-                            ),
-                          ),
-                        ],
+                    const SizedBox(height: 2),
+                    if (booking.selectedServices.isNotEmpty)
+                      Text(
+                        booking.selectedServices.join(' + '),
+                        style: const TextStyle(color: Colors.white54, fontSize: 12),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
                   ],
                 ),
               ),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Text(
-                    'PKR ${booking.pricePKR}',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 20,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                ],
+              Text(
+                'PKR ${booking.pricePKR}',
+                style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w700),
               ),
             ],
           ),
+
           const SizedBox(height: 16),
+
+          // ── Action Buttons (lifecycle-aware) ──
           Row(
             children: [
-              if (isStarted) ...[
+              if (isInProgress) ...[
+                // In Progress → Complete Job
                 Expanded(
                   child: ElevatedButton.icon(
                     onPressed: () => _showCompleteJobDialog(booking),
@@ -819,25 +854,22 @@ class _BarberDashboardScreenState extends State<BarberDashboardScreen> {
                       backgroundColor: const Color(0xFF00C853),
                       foregroundColor: Colors.white,
                       padding: const EdgeInsets.symmetric(vertical: 14),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                     ),
                   ),
                 ),
-              ] else ...[
+              ] else if (isAccepted) ...[
+                // Accepted → Start Job
                 Expanded(
-                  child: OutlinedButton.icon(
+                  child: ElevatedButton.icon(
                     onPressed: () => _startJob(booking),
                     icon: const Icon(Icons.play_arrow, size: 20),
                     label: const Text('Start Job'),
-                    style: OutlinedButton.styleFrom(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF2196F3),
                       foregroundColor: Colors.white,
-                      side: const BorderSide(color: Colors.white54),
                       padding: const EdgeInsets.symmetric(vertical: 14),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                     ),
                   ),
                 ),
@@ -846,6 +878,122 @@ class _BarberDashboardScreenState extends State<BarberDashboardScreen> {
           ),
         ],
       ),
+    );
+  }
+
+  /// Uber-style lifecycle progress bar: Requested → Accepted → In Progress → Completed
+  Widget _buildLifecycleProgress(BookingStatus status) {
+    final steps = ['Requested', 'Accepted', 'In Progress', 'Completed'];
+    final currentStep = switch (status) {
+      BookingStatus.pending => 0,
+      BookingStatus.confirmed => 1,
+      BookingStatus.inProgress => 2,
+      BookingStatus.completed => 3,
+      _ => 0,
+    };
+
+    return Row(
+      children: List.generate(steps.length * 2 - 1, (index) {
+        if (index.isOdd) {
+          // Connector line
+          final stepIndex = index ~/ 2;
+          final isComplete = stepIndex < currentStep;
+          return Expanded(
+            child: Container(
+              height: 2,
+              color: isComplete ? const Color(0xFF00C853) : Colors.white24,
+            ),
+          );
+        }
+        // Step dot
+        final stepIndex = index ~/ 2;
+        final isComplete = stepIndex <= currentStep;
+        final isCurrent = stepIndex == currentStep;
+
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: isCurrent ? 14 : 10,
+              height: isCurrent ? 14 : 10,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: isComplete ? const Color(0xFF00C853) : Colors.white24,
+                border: isCurrent ? Border.all(color: Colors.white, width: 2) : null,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              steps[stepIndex],
+              style: TextStyle(
+                color: isComplete ? Colors.white : Colors.white38,
+                fontSize: 9,
+                fontWeight: isCurrent ? FontWeight.w700 : FontWeight.w500,
+              ),
+            ),
+          ],
+        );
+      }),
+    );
+  }
+
+  /// Phase 4: Countdown indicator showing time left to respond.
+  /// Reads from server-set assignmentExpiresAt — no client-side timer logic.
+  Widget _buildCountdownIndicator(DateTime expiresAt) {
+    final now = DateTime.now();
+    final remaining = expiresAt.difference(now);
+    final totalMinutes = remaining.inMinutes;
+    final isExpired = remaining.isNegative;
+
+    // Progress: 30 min total, calculate fraction remaining
+    final progress = isExpired ? 0.0 : (remaining.inSeconds / (30 * 60)).clamp(0.0, 1.0);
+
+    final Color barColor;
+    final String timeText;
+
+    if (isExpired) {
+      barColor = Colors.red;
+      timeText = 'Expired';
+    } else if (totalMinutes < 5) {
+      barColor = Colors.red;
+      timeText = '${remaining.inMinutes}m ${remaining.inSeconds % 60}s left';
+    } else if (totalMinutes < 15) {
+      barColor = Colors.orange;
+      timeText = '${totalMinutes}m left';
+    } else {
+      barColor = const Color(0xFF00C853);
+      timeText = '${totalMinutes}m left';
+    }
+
+    return Column(
+      children: [
+        Row(
+          children: [
+            Icon(Icons.timer, size: 14, color: barColor),
+            const SizedBox(width: 6),
+            Expanded(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(
+                  value: progress,
+                  backgroundColor: Colors.grey[200],
+                  valueColor: AlwaysStoppedAnimation(barColor),
+                  minHeight: 6,
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Text(
+              timeText,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: barColor,
+              ),
+            ),
+          ],
+        ),
+      ],
     );
   }
 
@@ -991,18 +1139,33 @@ class _BarberDashboardScreenState extends State<BarberDashboardScreen> {
                       color: Color(0xFF1A1A1A),
                     ),
                   ),
-                  const SizedBox(height: 4),
-                  Text(
-                    '~2.5 km', // Mock distance
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: Colors.grey[600],
+                  if (request.rerouteCount > 0) ...[
+                    const SizedBox(height: 4),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.blue.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        'Rerouted ${request.rerouteCount}x',
+                        style: const TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.blue,
+                        ),
+                      ),
                     ),
-                  ),
+                  ],
                 ],
               ),
             ],
           ),
+          // ── Phase 4: Countdown indicator ──
+          if (request.assignmentExpiresAt != null) ...[
+            const SizedBox(height: 8),
+            _buildCountdownIndicator(request.assignmentExpiresAt!),
+          ],
           const SizedBox(height: 12),
           Row(
             children: [
@@ -1044,24 +1207,23 @@ class _BarberDashboardScreenState extends State<BarberDashboardScreen> {
   }
 
   Future<void> _acceptRequest(Booking request) async {
-    // Check system restrictions first
     if (_systemMonitor.hasSystemRestrictions) {
       _showValidationError(_systemMonitor.restrictionMessage);
       return;
     }
 
-    final success = await _userDataProvider.acceptBookingRequest(request.id);
-    if (mounted && success) {
+    final result = await _engine.acceptBooking(request.id);
+    if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
+        SnackBar(
           content: Row(
             children: [
-              Icon(Icons.check_circle, color: Colors.white),
-              SizedBox(width: 12),
-              Text('Booking accepted!'),
+              Icon(result.success ? Icons.check_circle : Icons.error, color: Colors.white),
+              const SizedBox(width: 12),
+              Expanded(child: Text(result.message)),
             ],
           ),
-          backgroundColor: Color(0xFF00C853),
+          backgroundColor: result.success ? const Color(0xFF00C853) : Colors.red,
           behavior: SnackBarBehavior.floating,
         ),
       );
@@ -1074,7 +1236,9 @@ class _BarberDashboardScreenState extends State<BarberDashboardScreen> {
       builder: (context) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Text('Decline Booking?'),
-        content: const Text('Are you sure you want to decline this booking request?'),
+        content: const Text(
+            'Are you sure you want to decline this booking request?\n'
+            'The customer will receive a full refund.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -1090,18 +1254,17 @@ class _BarberDashboardScreenState extends State<BarberDashboardScreen> {
     );
 
     if (confirmed == true) {
-      // Check system restrictions first
       if (_systemMonitor.hasSystemRestrictions) {
         _showValidationError(_systemMonitor.restrictionMessage);
         return;
       }
 
-      final success = await _userDataProvider.rejectBookingRequest(request.id);
-      if (mounted && success) {
+      final result = await _engine.rejectBooking(request.id);
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Booking declined'),
-            backgroundColor: Colors.grey,
+          SnackBar(
+            content: Text(result.message),
+            backgroundColor: result.success ? Colors.grey[800] : Colors.red,
             behavior: SnackBarBehavior.floating,
           ),
         );
@@ -1110,18 +1273,23 @@ class _BarberDashboardScreenState extends State<BarberDashboardScreen> {
   }
 
   Future<void> _startJob(Booking booking) async {
-    final success = await _userDataProvider.startJob(booking.id);
-    if (mounted && success) {
+    if (_systemMonitor.hasSystemRestrictions) {
+      _showValidationError(_systemMonitor.restrictionMessage);
+      return;
+    }
+
+    final result = await _engine.startJob(booking.id);
+    if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
+        SnackBar(
           content: Row(
             children: [
-              Icon(Icons.play_circle_filled, color: Colors.white),
-              SizedBox(width: 12),
-              Text('Job started!'),
+              Icon(result.success ? Icons.play_circle_filled : Icons.error, color: Colors.white),
+              const SizedBox(width: 12),
+              Expanded(child: Text(result.message)),
             ],
           ),
-          backgroundColor: Color(0xFF2196F3),
+          backgroundColor: result.success ? const Color(0xFF2196F3) : Colors.red,
           behavior: SnackBarBehavior.floating,
         ),
       );
@@ -1193,22 +1361,25 @@ class _BarberDashboardScreenState extends State<BarberDashboardScreen> {
                 }
 
                 Navigator.pop(context);
-                await _userDataProvider.completeBooking(
+                final result = await _engine.completeJob(
                   booking.id,
-                  rating,
-                  commentController.text.isEmpty ? null : commentController.text,
+                  customerRating: rating,
+                  ratingComment: commentController.text.isEmpty ? null : commentController.text,
                 );
                 if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: Row(
                         children: [
-                          const Icon(Icons.check_circle, color: Colors.white),
+                          Icon(
+                            result.success ? Icons.check_circle : Icons.error,
+                            color: Colors.white,
+                          ),
                           const SizedBox(width: 12),
-                          Text('Job completed! +PKR ${booking.pricePKR}'),
+                          Expanded(child: Text(result.message)),
                         ],
                       ),
-                      backgroundColor: const Color(0xFF00C853),
+                      backgroundColor: result.success ? const Color(0xFF00C853) : Colors.red,
                       behavior: SnackBarBehavior.floating,
                     ),
                   );
@@ -1225,7 +1396,7 @@ class _BarberDashboardScreenState extends State<BarberDashboardScreen> {
     );
   }
 
-  Widget _buildTodayStats(int totalBookings, int completedCount, int earnings) {
+  Widget _buildTodayStats(int todayJobs, int completedToday, int todayEarnings, int totalCompleted) {
     return Padding(
       padding: const EdgeInsets.all(16),
       child: Column(
@@ -1244,8 +1415,8 @@ class _BarberDashboardScreenState extends State<BarberDashboardScreen> {
             children: [
               Expanded(
                 child: _buildStatCard(
-                  'Bookings',
-                  '$totalBookings',
+                  'Jobs Today',
+                  '$todayJobs',
                   Icons.calendar_today,
                   const Color(0xFF2196F3),
                 ),
@@ -1254,7 +1425,7 @@ class _BarberDashboardScreenState extends State<BarberDashboardScreen> {
               Expanded(
                 child: _buildStatCard(
                   'Completed',
-                  '$completedCount',
+                  '$completedToday',
                   Icons.check_circle_outline,
                   const Color(0xFF4CAF50),
                 ),
@@ -1262,13 +1433,52 @@ class _BarberDashboardScreenState extends State<BarberDashboardScreen> {
               const SizedBox(width: 12),
               Expanded(
                 child: _buildStatCard(
-                  'Earnings',
-                  'PKR $earnings',
+                  'Earned',
+                  'PKR $todayEarnings',
                   Icons.account_balance_wallet,
                   const Color(0xFFFF9800),
                 ),
               ),
             ],
+          ),
+          const SizedBox(height: 8),
+          // Total completed (all-time)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.04),
+                  blurRadius: 10,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 36,
+                  height: 36,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF9C27B0).withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(Icons.verified, color: Color(0xFF9C27B0), size: 20),
+                ),
+                const SizedBox(width: 12),
+                const Text(
+                  'Total Completed Jobs',
+                  style: TextStyle(fontSize: 14, color: Color(0xFF666666)),
+                ),
+                const Spacer(),
+                Text(
+                  '$totalCompleted',
+                  style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700, color: Color(0xFF1A1A1A)),
+                ),
+              ],
+            ),
           ),
         ],
       ),
@@ -1611,6 +1821,112 @@ class _BarberDashboardScreenState extends State<BarberDashboardScreen> {
                 style: const TextStyle(
                   fontSize: 16,
                   fontWeight: FontWeight.w700,
+                  color: Color(0xFF1A1A1A),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Job History section — shows recent completed + cancelled
+  Widget _buildJobHistory(List<Booking> history) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Recent Job History',
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w700,
+              color: Color(0xFF1A1A1A),
+            ),
+          ),
+          const SizedBox(height: 8),
+          ...history.map((booking) => _buildHistoryItem(booking)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHistoryItem(Booking booking) {
+    final statusColor = booking.status.color;
+    final statusIcon = booking.status.icon;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.03),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: statusColor.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(statusIcon, color: statusColor, size: 20),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  booking.displayName,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF1A1A1A),
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  '${booking.shortDate} • ${booking.timeSlot}',
+                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                ),
+              ],
+            ),
+          ),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: statusColor.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  booking.status.displayName,
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: statusColor,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'PKR ${booking.pricePKR}',
+                style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
                   color: Color(0xFF1A1A1A),
                 ),
               ),

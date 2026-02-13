@@ -342,7 +342,7 @@ class AppData extends ChangeNotifier {
   // Get barber's upcoming bookings
   List<Booking> get barberUpcomingBookings => barberBookings
       .where((b) => 
-          b.status == BookingStatus.confirmed && 
+          (b.status == BookingStatus.confirmed || b.status == BookingStatus.pending) && 
           b.bookingDateTime.isAfter(DateTime.now()))
       .toList()
       ..sort((a, b) => a.bookingDateTime.compareTo(b.bookingDateTime));
@@ -619,17 +619,15 @@ class AppData extends ChangeNotifier {
   // Get upcoming bookings
   List<Booking> get upcomingBookings => _bookings
       .where((b) => 
-          b.status == BookingStatus.confirmed && 
+          b.status.isActive && 
           b.bookingDateTime.isAfter(DateTime.now()))
       .toList();
 
   // Get past bookings
   List<Booking> get pastBookings => _bookings
       .where((b) => 
-          b.status == BookingStatus.completed ||
-          b.status == BookingStatus.cancelledByCustomer ||
-          b.status == BookingStatus.cancelledByBarber ||
-          (b.status == BookingStatus.confirmed && b.bookingDateTime.isBefore(DateTime.now())))
+          b.status.isTerminal ||
+          (b.status.isActive && b.bookingDateTime.isBefore(DateTime.now())))
       .toList();
 }
 

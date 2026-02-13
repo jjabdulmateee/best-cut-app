@@ -49,6 +49,31 @@ class BookingTimeline extends StatelessWidget {
       isFirst: true,
     ));
 
+    // Phase 4: Reroute event(s)
+    if (booking.rerouteCount > 0) {
+      items.add(_TimelineItem(
+        icon: Icons.swap_horiz,
+        iconColor: const Color(0xFFFF9800),
+        title: 'Rerouted ${booking.rerouteCount} time(s)',
+        subtitle: booking.lastAssignmentBarberId != null
+            ? 'Previous barber didn\'t respond. Booking reassigned.'
+            : 'Booking was rerouted to a new barber.',
+        timestamp: booking.assignedAt ?? booking.updatedAt ?? booking.createdAt,
+      ));
+    }
+
+    // Phase 4: Assignment expired (waiting for customer decision)
+    if (booking.assignmentExpired && booking.status == BookingStatus.pending) {
+      items.add(_TimelineItem(
+        icon: Icons.timer_off,
+        iconColor: Colors.red,
+        title: 'Barber Didn\'t Respond',
+        subtitle: 'Waiting for your decision: find another barber or cancel.',
+        timestamp: booking.assignmentExpiresAt ?? booking.updatedAt ?? booking.createdAt,
+        isLast: true,
+      ));
+    }
+
     // Admin Override (if any)
     if (adminModifiedBookings[booking.id] == true) {
       items.add(_TimelineItem(
@@ -61,28 +86,31 @@ class BookingTimeline extends StatelessWidget {
       ));
     }
 
-    // Booking Confirmed
+    // Booking Accepted
     if (booking.status == BookingStatus.confirmed ||
+        booking.status == BookingStatus.inProgress ||
         booking.status == BookingStatus.completed ||
         booking.status == BookingStatus.cancelledByCustomer ||
         booking.status == BookingStatus.cancelledByBarber) {
       items.add(_TimelineItem(
         icon: Icons.check_circle_outline,
         iconColor: const Color(0xFF4CAF50),
-        title: 'Booking Confirmed',
+        title: 'Barber Accepted',
         subtitle: 'Barber accepted your booking request',
         timestamp: booking.acceptedAt ?? booking.createdAt,
       ));
     }
 
-    // Job Started (if applicable)
-    if (booking.status == BookingStatus.completed) {
+    // Job Started
+    if (booking.status == BookingStatus.inProgress ||
+        booking.status == BookingStatus.completed) {
       items.add(_TimelineItem(
         icon: Icons.play_circle_outline,
         iconColor: const Color(0xFF2196F3),
         title: 'Job Started',
         subtitle: 'Barber began the service',
         timestamp: booking.startedAt ?? booking.createdAt,
+        isLast: booking.status == BookingStatus.inProgress,
       ));
     }
 
@@ -93,8 +121,8 @@ class BookingTimeline extends StatelessWidget {
         iconColor: const Color(0xFF4CAF50),
         title: 'Job Completed',
         subtitle: 'Service completed successfully',
-        timestamp: booking.updatedAt ?? booking.createdAt,
-        isLast: true,
+        timestamp: booking.completedAt ?? booking.updatedAt ?? booking.createdAt,
+        isLast: booking.customerRating == null,
       ));
 
       // Add rating if available
@@ -104,10 +132,31 @@ class BookingTimeline extends StatelessWidget {
           iconColor: const Color(0xFFFFB800),
           title: 'Rating Submitted',
           subtitle: 'You rated this service ${booking.customerRating}/5',
-          timestamp: booking.updatedAt ?? booking.createdAt,
+          timestamp: booking.completedAt ?? booking.updatedAt ?? booking.createdAt,
           isLast: true,
         ));
       }
+    }
+
+    // Rejected by barber
+    else if (booking.status == BookingStatus.rejected) {
+      items.add(_TimelineItem(
+        icon: Icons.cancel,
+        iconColor: const Color(0xFFF44336),
+        title: 'Barber Declined',
+        subtitle: booking.cancellationReason ?? 'Barber was unable to accept',
+        timestamp: booking.rejectedAt ?? booking.updatedAt ?? booking.createdAt,
+      ));
+      items.add(_TimelineItem(
+        icon: Icons.account_balance_wallet,
+        iconColor: const Color(0xFF4CAF50),
+        title: 'Full Refund Issued',
+        subtitle: booking.refundAmount != null
+            ? 'PKR ${booking.refundAmount} refunded to your wallet'
+            : 'Full refund processed to your wallet',
+        timestamp: booking.rejectedAt ?? booking.updatedAt ?? booking.createdAt,
+        isLast: true,
+      ));
     }
 
     // Cancellation (customer)
@@ -118,15 +167,15 @@ class BookingTimeline extends StatelessWidget {
         title: 'Cancelled by Customer',
         subtitle: booking.cancellationReason ?? 'Booking was cancelled',
         timestamp: booking.updatedAt ?? booking.createdAt,
-        isLast: true,
       ));
 
-      // Add refund info if applicable
       items.add(_TimelineItem(
         icon: Icons.account_balance_wallet,
         iconColor: const Color(0xFF4CAF50),
         title: 'Refund Processed',
-        subtitle: '50% refund issued to your wallet',
+        subtitle: booking.refundAmount != null
+            ? 'PKR ${booking.refundAmount} refunded to your wallet'
+            : 'Refund issued to your wallet',
         timestamp: booking.updatedAt ?? booking.createdAt,
         isLast: true,
       ));
@@ -140,10 +189,8 @@ class BookingTimeline extends StatelessWidget {
         title: 'Cancelled by Barber',
         subtitle: booking.cancellationReason ?? 'Booking was cancelled by barber',
         timestamp: booking.updatedAt ?? booking.createdAt,
-        isLast: true,
       ));
 
-      // Add refund info
       items.add(_TimelineItem(
         icon: Icons.account_balance_wallet,
         iconColor: const Color(0xFF4CAF50),
