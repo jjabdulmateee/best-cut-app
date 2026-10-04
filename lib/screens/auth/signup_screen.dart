@@ -1,8 +1,10 @@
+import 'package:firebase_auth/firebase_auth.dart' show PhoneAuthCredential;
 import 'package:flutter/material.dart';
 import '../../services/auth_service.dart';
 import '../../data/user_data_provider.dart';
 import '../../config/dev_config.dart';
 import '../../main.dart';
+import 'otp_screen.dart';
 
 class SignUpScreen extends StatefulWidget {
   /// Pre-selected role from the role selection screen
@@ -50,18 +52,138 @@ class _SignUpScreenState extends State<SignUpScreen> {
     super.dispose();
   }
 
+  // ── Signup flow ───────────────────────────────────────────────────────────
+  //
+  //   1. createAuthAccount      → Firebase Auth user + phone uniqueness check
+  //   2. startPhoneVerification → Firebase sends OTP (verifyPhoneNumber)
+  //   3. OtpScreen              → user enters 6-digit code
+  //   4. linkPhoneToCurrentUser → PhoneAuthProvider.credential + linkWithCredential
+  //   5. completeSignUpProfile  → Firestore users / barber_applications / phone_registry
+  //
+  // Cancelling or failing anywhere between 1 and 5 deletes the Auth user.
+
+  /// True once Firebase has linked the verified phone to the new account.
+  bool _phoneLinked = false;
+
+  /// True while the OTP screen is on top of the navigation stack.
+  bool _otpScreenOpen = false;
+
+  /// Set once the flow has reached a terminal state (profile written OR
+  /// aborted) so late Firebase callbacks can't re-enter it.
+  bool _flowFinished = false;
+
+  String get _normalizedPhone =>
+      AuthService.normalizePhoneToE164(_phoneController.text.trim());
+
   Future<void> _handleSignUp() async {
     if (!_formKey.currentState!.validate()) return;
 
     setState(() {
       _isLoading = true;
       _errorMessage = null;
+      _phoneLinked = false;
+      _otpScreenOpen = false;
+      _flowFinished = false;
     });
 
-    final result = await _authService.signUp(
+    // Stage 1: Create Auth account, then check the phone isn't already taken.
+    final created = await _authService.createAuthAccount(
       email: _emailController.text.trim(),
       password: _passwordController.text,
+      phone: _phoneController.text.trim(),
+    );
+    if (!mounted) return;
+
+    if (!created.isSuccess) {
+      setState(() {
+        _isLoading = false;
+        _errorMessage = created.error;
+      });
+      return;
+    }
+
+    // Stage 2: Ask Firebase to send the OTP. The phone is normalized to E.164
+    // inside AuthService before it reaches verifyPhoneNumber.
+    await _authService.startPhoneVerification(
+      phone: _phoneController.text.trim(),
+      onCodeSent: _openOtpScreen,
+      onVerificationCompleted: _onPhoneAutoVerified,
+      onFailed: (message) => _abortSignUp(message),
+    );
+  }
+
+  /// Stage 3: Show the OTP screen; on success link the phone & finish signup.
+  Future<void> _openOtpScreen(String verificationId, int? resendToken) async {
+    if (!mounted || _phoneLinked || _otpScreenOpen) return;
+
+    _otpScreenOpen = true;
+    final verified = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => OtpScreen(
+          phoneNumber: _normalizedPhone,
+          verificationId: verificationId,
+          resendToken: resendToken,
+          // Stage 4: PhoneAuthProvider.credential + linkWithCredential
+          onSubmit: (vid, code) async {
+            final result = await _authService.linkPhoneToCurrentUser(
+              verificationId: vid,
+              smsCode: code,
+            );
+            if (result.isSuccess) _phoneLinked = true;
+            return result;
+          },
+          onAutoVerified: (credential) async {
+            final result =
+                await _authService.linkPhoneCredentialToCurrentUser(credential);
+            if (result.isSuccess) _phoneLinked = true;
+            return result;
+          },
+        ),
+      ),
+    );
+    _otpScreenOpen = false;
+    if (!mounted) return;
+
+    if (verified == true || _phoneLinked) {
+      await _completeSignUp();
+    } else {
+      await _abortSignUp(
+          'Phone verification was cancelled. Your account was not created.');
+    }
+  }
+
+  /// Android instant verification / SMS auto-retrieval: Firebase handed us a
+  /// ready credential, so link it directly without the user typing the code.
+  Future<void> _onPhoneAutoVerified(PhoneAuthCredential credential) async {
+    if (!mounted || _phoneLinked) return;
+
+    final result =
+        await _authService.linkPhoneCredentialToCurrentUser(credential);
+    if (!mounted) return;
+
+    if (result.isSuccess) {
+      _phoneLinked = true;
+      if (_otpScreenOpen) {
+        // Pop the OTP screen; _openOtpScreen resumes and completes signup.
+        Navigator.of(context).pop(true);
+      } else {
+        await _completeSignUp();
+      }
+    } else if (!_otpScreenOpen) {
+      // No OTP screen to fall back to — surface the error.
+      await _abortSignUp(result.error ?? 'Phone verification failed.');
+    }
+    // If the OTP screen is open and auto-link failed, let the user type the code.
+  }
+
+  /// Stage 5: Write the Firestore profile now that the phone is verified.
+  Future<void> _completeSignUp() async {
+    if (_flowFinished || !mounted) return;
+    _flowFinished = true;
+
+    final result = await _authService.completeSignUpProfile(
       name: _nameController.text.trim(),
+      email: _emailController.text.trim(),
       phone: _phoneController.text.trim(),
       role: _selectedRole,
     );
@@ -90,6 +212,18 @@ class _SignUpScreenState extends State<SignUpScreen> {
         _errorMessage = result.error;
       });
     }
+  }
+
+  /// Delete the half-created Auth account and show [message] on the form.
+  Future<void> _abortSignUp(String message) async {
+    if (_flowFinished) return;
+    _flowFinished = true; // block any late callbacks from continuing
+    await _authService.abortSignUp();
+    if (!mounted) return;
+    setState(() {
+      _isLoading = false;
+      _errorMessage = message;
+    });
   }
 
   void _showSuccessAndNavigate() {
@@ -501,6 +635,8 @@ class _SignUpScreenState extends State<SignUpScreen> {
                     label: 'Phone Number',
                     hint: '03XX-XXXXXXX or +92 3XX XXXXXXX',
                     icon: Icons.phone_outlined,
+                  ).copyWith(
+                    helperText: 'We\'ll send a 6-digit verification code to this number',
                   ),
                   validator: _validatePhone,
                 ),

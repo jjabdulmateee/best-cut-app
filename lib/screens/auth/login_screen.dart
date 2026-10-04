@@ -1,9 +1,11 @@
+import 'package:firebase_auth/firebase_auth.dart' show PhoneAuthCredential;
 import 'package:flutter/material.dart';
 import '../../services/auth_service.dart';
 import '../../data/user_data_provider.dart';
 import '../../main.dart';
 import 'signup_screen.dart';
 import 'forgot_password_screen.dart';
+import 'otp_screen.dart';
 
 class LoginScreen extends StatefulWidget {
   /// Expected role for this login (from role selection screen)
@@ -78,6 +80,150 @@ class _LoginScreenState extends State<LoginScreen> {
         _errorMessage = result.error;
       });
     }
+  }
+
+  // ── One-Tap Demo (for evaluators) ─────────────────────────────────────────
+  //
+  // These numbers are registered in Firebase Console → Authentication →
+  // Sign-in method → Phone → "Phone numbers for testing" with code 123456.
+  // They go through the SAME native flow as any real number:
+  //   verifyPhoneNumber → codeSent → PhoneAuthProvider.credential → signInWithCredential
+  // Firebase intercepts test numbers on its backend (no SMS, fixed code), so
+  // there is no mock branch or dev flag anywhere in this path.
+
+  static const String _demoCustomerPhone = '+923001234567';
+  static const String _demoBarberPhone = '+923007654321';
+  static const String _demoOtp = '123456';
+
+  /// Which demo button is currently running (null when idle).
+  UserRole? _demoInProgress;
+  bool _demoOtpOpen = false;
+  bool _demoSignedIn = false;
+
+  bool get _anyActionRunning => _isLoading || _demoInProgress != null;
+
+  Future<void> _handleDemoLogin(UserRole role) async {
+    if (_anyActionRunning) return;
+
+    final phone =
+        role == UserRole.customer ? _demoCustomerPhone : _demoBarberPhone;
+
+    setState(() {
+      _demoInProgress = role;
+      _errorMessage = null;
+      _demoOtpOpen = false;
+      _demoSignedIn = false;
+    });
+
+    // Phone is normalized to E.164 inside AuthService before verifyPhoneNumber.
+    await _authService.startPhoneVerification(
+      phone: phone,
+      onCodeSent: (verificationId, resendToken) =>
+          _openDemoOtpScreen(phone, role, verificationId, resendToken),
+      onVerificationCompleted: (credential) =>
+          _onDemoAutoVerified(credential, role),
+      onFailed: (message) {
+        if (!mounted) return;
+        setState(() {
+          _demoInProgress = null;
+          _errorMessage = message;
+        });
+      },
+    );
+  }
+
+  /// Pre-fills the fixed test OTP and auto-submits it through signInWithPhone.
+  Future<void> _openDemoOtpScreen(
+    String phone,
+    UserRole role,
+    String verificationId,
+    int? resendToken,
+  ) async {
+    if (!mounted || _demoSignedIn || _demoOtpOpen) return;
+
+    final roleLabel = role == UserRole.customer ? 'Customer' : 'Barber';
+    _demoOtpOpen = true;
+    final verified = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => OtpScreen(
+          phoneNumber: phone,
+          verificationId: verificationId,
+          resendToken: resendToken,
+          title: 'Demo $roleLabel Sign-In',
+          initialCode: _demoOtp,
+          autoSubmit: true,
+          onSubmit: (vid, code) async {
+            final result = await _authService.signInWithPhone(
+              verificationId: vid,
+              smsCode: code,
+            );
+            if (result.isSuccess) _demoSignedIn = true;
+            return result;
+          },
+          onAutoVerified: (credential) async {
+            final result =
+                await _authService.signInWithPhoneCredential(credential);
+            if (result.isSuccess) _demoSignedIn = true;
+            return result;
+          },
+        ),
+      ),
+    );
+    _demoOtpOpen = false;
+    if (!mounted) return;
+
+    if (verified == true || _demoSignedIn) {
+      await _finishDemoLogin(role);
+    } else {
+      setState(() => _demoInProgress = null);
+    }
+  }
+
+  /// Android instant verification / auto-retrieval path.
+  Future<void> _onDemoAutoVerified(
+      PhoneAuthCredential credential, UserRole role) async {
+    if (!mounted || _demoSignedIn) return;
+
+    final result = await _authService.signInWithPhoneCredential(credential);
+    if (!mounted) return;
+
+    if (result.isSuccess) {
+      _demoSignedIn = true;
+      if (_demoOtpOpen) {
+        Navigator.of(context).pop(true); // _openDemoOtpScreen resumes
+      } else {
+        await _finishDemoLogin(role);
+      }
+    } else if (!_demoOtpOpen) {
+      setState(() {
+        _demoInProgress = null;
+        _errorMessage = result.error;
+      });
+    }
+  }
+
+  /// Phone sign-in succeeded. Make sure a Firestore profile exists for the demo
+  /// account (first sign-in only), then hand off to AuthWrapper which routes by
+  /// the profile's role.
+  Future<void> _finishDemoLogin(UserRole role) async {
+    final result = await _authService.ensureProfileForPhoneUser(
+      role: role,
+      displayName: role == UserRole.customer ? 'Demo Customer' : 'Demo Barber',
+    );
+    if (!mounted) return;
+
+    if (!result.isSuccess) {
+      setState(() {
+        _demoInProgress = null;
+        _errorMessage = result.error;
+      });
+      return;
+    }
+
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const AuthWrapper()),
+      (route) => false,
+    );
   }
 
   /// Shows a friendly dialog when the user tries to log into the wrong section.
@@ -422,7 +568,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 SizedBox(
                   height: 54,
                   child: ElevatedButton(
-                    onPressed: _isLoading ? null : _handleLogin,
+                    onPressed: _anyActionRunning ? null : _handleLogin,
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFF1A1A1A),
                       foregroundColor: Colors.white,
@@ -448,6 +594,52 @@ class _LoginScreenState extends State<LoginScreen> {
                             ),
                           ),
                   ),
+                ),
+                const SizedBox(height: 28),
+
+                // ── One-Tap Demo (evaluators) ──
+                Row(
+                  children: [
+                    Expanded(child: Divider(color: Colors.grey[300])),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      child: Text(
+                        'FOR EVALUATORS',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 1.2,
+                          color: Colors.grey[600],
+                        ),
+                      ),
+                    ),
+                    Expanded(child: Divider(color: Colors.grey[300])),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                _DemoButton(
+                  icon: Icons.person_outline,
+                  label: 'One-Tap Demo Customer',
+                  phoneLabel: '+92 300 1234567',
+                  isRunning: _demoInProgress == UserRole.customer,
+                  enabled: !_anyActionRunning,
+                  onPressed: () => _handleDemoLogin(UserRole.customer),
+                ),
+                const SizedBox(height: 12),
+                _DemoButton(
+                  icon: Icons.content_cut,
+                  label: 'One-Tap Demo Barber',
+                  phoneLabel: '+92 300 7654321',
+                  isRunning: _demoInProgress == UserRole.barber,
+                  enabled: !_anyActionRunning,
+                  onPressed: () => _handleDemoLogin(UserRole.barber),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  'Signs in through the real Firebase phone OTP flow using '
+                  'Firebase test numbers (code 123456 is pre-filled and auto-submitted).',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 12, color: Colors.grey[600], height: 1.4),
                 ),
                 const SizedBox(height: 24),
 
@@ -492,6 +684,94 @@ class _LoginScreenState extends State<LoginScreen> {
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Prominent one-tap demo button used by evaluators.
+class _DemoButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String phoneLabel;
+  final bool isRunning;
+  final bool enabled;
+  final VoidCallback onPressed;
+
+  const _DemoButton({
+    required this.icon,
+    required this.label,
+    required this.phoneLabel,
+    required this.isRunning,
+    required this.enabled,
+    required this.onPressed,
+  });
+
+  static const Color _accent = Color(0xFF1565C0);
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 60,
+      child: ElevatedButton(
+        onPressed: enabled ? onPressed : null,
+        style: ElevatedButton.styleFrom(
+          backgroundColor: _accent,
+          foregroundColor: Colors.white,
+          disabledBackgroundColor: _accent.withValues(alpha: isRunning ? 1.0 : 0.45),
+          disabledForegroundColor: Colors.white,
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+          elevation: 0,
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.18),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: isRunning
+                  ? const Padding(
+                      padding: EdgeInsets.all(8),
+                      child: CircularProgressIndicator(
+                        color: Colors.white,
+                        strokeWidth: 2,
+                      ),
+                    )
+                  : Icon(icon, size: 20, color: Colors.white),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    label,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    isRunning ? 'Verifying with Firebase…' : '$phoneLabel  ·  OTP 123456',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Colors.white.withValues(alpha: 0.85),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Icon(Icons.bolt, size: 22, color: Colors.white),
+          ],
         ),
       ),
     );

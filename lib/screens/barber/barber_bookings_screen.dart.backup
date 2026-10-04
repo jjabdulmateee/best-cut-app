@@ -1,0 +1,1014 @@
+import 'package:flutter/material.dart';
+import '../../data/user_data_provider.dart';
+import '../../models/slot.dart';
+import '../../widgets/admin_override_indicator.dart';
+import '../../widgets/booking_timeline.dart';
+import '../../widgets/admin_override_indicator.dart' as admin_widgets;
+
+class BarberBookingsScreen extends StatefulWidget {
+  const BarberBookingsScreen({super.key});
+
+  @override
+  State<BarberBookingsScreen> createState() => _BarberBookingsScreenState();
+}
+
+class _BarberBookingsScreenState extends State<BarberBookingsScreen>
+    with SingleTickerProviderStateMixin {
+  late TabController _tabController;
+  final _userDataProvider = UserDataProvider();
+  final Map<String, bool> _adminModifiedBookings = {};
+  final Map<String, DateTime?> _adminModifiedTimes = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 4, vsync: this);
+    _userDataProvider.addListener(_onDataChanged);
+    _checkAdminOverrides();
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    _userDataProvider.removeListener(_onDataChanged);
+    super.dispose();
+  }
+
+  void _onDataChanged() {
+    if (mounted) {
+      setState(() {});
+      _checkAdminOverrides();
+    }
+  }
+
+  Future<void> _checkAdminOverrides() async {
+    final bookings = _userDataProvider.barberBookings;
+    for (final booking in bookings) {
+      final wasModified = await _userDataProvider.wasBookingModifiedByAdmin(booking.id);
+      final modifiedTime = await _userDataProvider.getBookingAdminModifiedTime(booking.id);
+
+      _adminModifiedBookings[booking.id] = wasModified;
+      _adminModifiedTimes[booking.id] = modifiedTime;
+    }
+
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  void _showBookingDetails(Booking booking) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.8,
+        maxChildSize: 0.9,
+        builder: (context, scrollController) => Container(
+          padding: const EdgeInsets.all(20),
+          child: SingleChildScrollView(
+            controller: scrollController,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Header
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Booking Details',
+                        style: const TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w700,
+                          color: Color(0xFF1A1A1A),
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.close),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+
+                // Admin banner if modified
+                if (_adminModifiedBookings[booking.id] == true)
+                  AdminActionBanner(
+                    action: 'Booking Modified by Admin',
+                    reason: 'This booking was reviewed and updated by a Best Cut administrator for safety and compliance.',
+                    actionTime: _adminModifiedTimes[booking.id],
+                    type: AdminActionType.info,
+                  ),
+
+                // Trust signals
+                const AdminTrustSignalsBanner(),
+
+                const SizedBox(height: 24),
+
+                // Booking Timeline
+                BookingTimeline(
+                  booking: booking,
+                  adminModifiedBookings: _adminModifiedBookings,
+                  adminModifiedTimes: _adminModifiedTimes,
+                ),
+
+                const SizedBox(height: 24),
+
+                // Support guidance if needed
+                if (booking.status.isCancelled)
+                  AdminDisputeGuidance(
+                    bookingId: booking.id,
+                    contactEmail: 'support@bestcut.pk',
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final pendingRequests = _userDataProvider.pendingBookingRequests;
+    final upcomingBookings = _userDataProvider.upcomingBookings;
+    final completedBookings = _userDataProvider.completedBookings;
+    final cancelledBookings = _userDataProvider.cancelledBookings;
+
+    return Scaffold(
+      backgroundColor: Colors.grey[100],
+      appBar: AppBar(
+        backgroundColor: Colors.white,
+        elevation: 0,
+        title: const Text(
+          'My Bookings',
+          style: TextStyle(
+            color: Color(0xFF1A1A1A),
+            fontWeight: FontWeight.w700,
+            fontSize: 22,
+          ),
+        ),
+        bottom: TabBar(
+          controller: _tabController,
+          labelColor: const Color(0xFF1A1A1A),
+          unselectedLabelColor: Colors.grey[600],
+          indicatorColor: const Color(0xFF1A1A1A),
+          indicatorWeight: 3,
+          labelStyle: const TextStyle(
+            fontWeight: FontWeight.w600,
+            fontSize: 13,
+          ),
+          isScrollable: true,
+          tabs: [
+            Tab(text: 'Requests (${pendingRequests.length})'),
+            Tab(text: 'Upcoming (${upcomingBookings.length})'),
+            Tab(text: 'Completed (${completedBookings.length})'),
+            Tab(text: 'Cancelled (${cancelledBookings.length})'),
+          ],
+        ),
+      ),
+      body: RefreshIndicator(
+        onRefresh: () async {
+          await _userDataProvider.initialize();
+        },
+        child: TabBarView(
+          controller: _tabController,
+          children: [
+            _buildBookingsList(pendingRequests, BookingListType.pending),
+            _buildBookingsList(upcomingBookings, BookingListType.upcoming),
+            _buildBookingsList(completedBookings, BookingListType.completed),
+            _buildBookingsList(cancelledBookings, BookingListType.cancelled),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBookingsList(List<Booking> bookings, BookingListType type) {
+    if (bookings.isEmpty) {
+      return _buildEmptyState(type);
+    }
+
+    return ListView.builder(
+      padding: const EdgeInsets.all(16),
+      itemCount: bookings.length,
+      itemBuilder: (context, index) {
+        return _buildBookingCard(bookings[index], type);
+      },
+    );
+  }
+
+  Widget _buildEmptyState(BookingListType type) {
+    String message;
+    String subtitle;
+    IconData icon;
+    
+    switch (type) {
+      case BookingListType.pending:
+        message = 'No pending requests';
+        subtitle = 'New booking requests will appear here';
+        icon = Icons.hourglass_empty;
+        break;
+      case BookingListType.upcoming:
+        message = 'No upcoming bookings';
+        subtitle = 'Accept requests to see upcoming bookings';
+        icon = Icons.calendar_today_outlined;
+        break;
+      case BookingListType.completed:
+        message = 'No completed bookings yet';
+        subtitle = 'Completed jobs will appear here';
+        icon = Icons.check_circle_outline;
+        break;
+      case BookingListType.cancelled:
+        message = 'No cancelled bookings';
+        subtitle = 'Cancelled bookings will appear here';
+        icon = Icons.cancel_outlined;
+        break;
+    }
+
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(icon, size: 64, color: Colors.grey[400]),
+          const SizedBox(height: 16),
+          Text(
+            message,
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w600,
+              color: Colors.grey[600],
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            subtitle,
+            style: TextStyle(
+              fontSize: 14,
+              color: Colors.grey[500],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBookingCard(Booking booking, BookingListType type) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: type == BookingListType.pending
+            ? Border.all(color: Colors.orange.withValues(alpha: 0.5), width: 2)
+            : null,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        children: [
+          // Header with customer info
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              children: [
+                Row(
+                  children: [
+                    // Customer avatar
+                    Container(
+                      width: 56,
+                  height: 56,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(14),
+                    image: booking.customerImageUrl != null && booking.customerImageUrl!.isNotEmpty
+                        ? DecorationImage(
+                            image: NetworkImage(booking.customerImageUrl!),
+                            fit: BoxFit.cover,
+                          )
+                        : null,
+                    color: Colors.grey[200],
+                  ),
+                  child: booking.customerImageUrl == null || booking.customerImageUrl!.isEmpty
+                      ? const Icon(Icons.person, color: Colors.grey, size: 28)
+                      : null,
+                ),
+                const SizedBox(width: 14),
+                // Customer info
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Flexible(
+                            child: Text(
+                              booking.customerName ?? 'Customer',
+                              style: const TextStyle(
+                                fontSize: 17,
+                                fontWeight: FontWeight.w600,
+                                color: Color(0xFF1A1A1A),
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          // Customer rating badge
+                          if (booking.customerRatingScore != null) ...[
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: _getRatingColor(booking.customerRatingScore!).withValues(alpha: 0.1),
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    Icons.star,
+                                    size: 12,
+                                    color: _getRatingColor(booking.customerRatingScore!),
+                                  ),
+                                  const SizedBox(width: 2),
+                                  Text(
+                                    booking.customerRatingScore!.toStringAsFixed(1),
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                      color: _getRatingColor(booking.customerRatingScore!),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Row(
+                        children: [
+                          Icon(Icons.calendar_today, size: 13, color: Colors.grey[600]),
+                          const SizedBox(width: 4),
+                          Text(
+                            booking.shortDate,
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Colors.grey[600],
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Icon(Icons.access_time, size: 13, color: Colors.grey[600]),
+                          const SizedBox(width: 4),
+                          Text(
+                            booking.timeSlot,
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Colors.grey[600],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                // Status badge and admin protection
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    _buildStatusBadge(booking.status),
+                    const SizedBox(height: 8),
+                    AdminProtectionShield(
+                      message: 'Admin Protected',
+                      isActive: true,
+                    ),
+                  ],
+                ),
+              ],
+            ),
+
+          // Divider
+          const Divider(height: 1, color: Color(0xFFE0E0E0)),
+
+          // Footer with price and actions
+          Padding(
+            padding: const EdgeInsets.all(12),
+            child: Row(
+              children: [
+                // Price
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.grey[100],
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Text(
+                        'PKR ${booking.pricePKR}',
+                        style: const TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700,
+                          color: Color(0xFF1A1A1A),
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      GestureDetector(
+                        onTap: () => _showBookingDetails(booking),
+                        child: Text(
+                          'View Details',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                            color: const Color(0xFF2196F3),
+                            decoration: TextDecoration.underline,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const Spacer(),
+                // Actions
+                if (type == BookingListType.pending) ...[
+                  OutlinedButton(
+                    onPressed: () => _rejectRequest(booking),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.red,
+                      side: const BorderSide(color: Colors.red),
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                    ),
+                    child: const Text('Decline'),
+                  ),
+                  const SizedBox(width: 8),
+                  ElevatedButton(
+                    onPressed: () => _acceptRequest(booking),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF00C853),
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                    ),
+                    child: const Text('Accept'),
+                  ),
+                ],
+                if (type == BookingListType.upcoming) ...[
+                  TextButton(
+                    onPressed: () => _showCancelDialog(booking),
+                    style: TextButton.styleFrom(
+                      foregroundColor: Colors.red,
+                    ),
+                    child: const Text('Cancel'),
+                  ),
+                  const SizedBox(width: 8),
+                  ElevatedButton(
+                    onPressed: () => _showCompleteDialog(booking),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF4CAF50),
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                    ),
+                    child: const Text('Complete'),
+                  ),
+                ],
+                if (type == BookingListType.completed && booking.customerRating != null)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF4CAF50).withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Row(
+                      children: [
+                        Text(
+                          'Rated: ',
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: Colors.grey[700],
+                          ),
+                        ),
+                        ...List.generate(
+                          5,
+                          (index) => Icon(
+                            index < booking.customerRating! 
+                                ? Icons.star 
+                                : Icons.star_border,
+                            size: 16,
+                            color: const Color(0xFFFFB800),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                if (type == BookingListType.cancelled && booking.cancellationReason != null) ...[
+                  Flexible(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: Colors.red.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        booking.cancelledBy == 'barber'
+                            ? 'You cancelled'
+                            : 'Customer cancelled',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.red,
+                          fontWeight: FontWeight.w500,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ),
+                ],
+
+                  // Admin override indicator
+                  // Temporarily removed to fix syntax error
+                ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStatusBadge(BookingStatus status) {
+    Color color;
+    String text;
+    
+    switch (status) {
+      case BookingStatus.pending:
+        color = Colors.orange;
+        text = 'Pending';
+        break;
+      case BookingStatus.confirmed:
+        color = const Color(0xFF2196F3);
+        text = 'Upcoming';
+        break;
+      case BookingStatus.completed:
+        color = const Color(0xFF4CAF50);
+        text = 'Completed';
+        break;
+      case BookingStatus.cancelledByCustomer:
+      case BookingStatus.cancelledByBarber:
+        color = Colors.red;
+        text = 'Cancelled';
+        break;
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+          color: color,
+        ),
+      ),
+    );
+  }
+
+  Color _getRatingColor(double rating) {
+    if (rating >= 4.5) return const Color(0xFF4CAF50);
+    if (rating >= 4.0) return const Color(0xFF8BC34A);
+    if (rating >= 3.0) return const Color(0xFFFF9800);
+    return const Color(0xFFF44336);
+  }
+
+  Future<void> _acceptRequest(Booking booking) async {
+    final success = await _userDataProvider.acceptBookingRequest(booking.id);
+    if (mounted && success) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Row(
+            children: [
+              Icon(Icons.check_circle, color: Colors.white),
+              SizedBox(width: 12),
+              Text('Booking accepted!'),
+            ],
+          ),
+          backgroundColor: Color(0xFF00C853),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  Future<void> _rejectRequest(Booking booking) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Decline Booking?'),
+        content: const Text('Are you sure you want to decline this booking request?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Decline', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      final success = await _userDataProvider.rejectBookingRequest(booking.id);
+      if (mounted && success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Booking declined'),
+            backgroundColor: Colors.grey,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
+  }
+
+  void _showCancelDialog(Booking booking) {
+    final reasonController = TextEditingController();
+    bool isProcessing = false;
+    
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setModalState) => Padding(
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.of(context).viewInsets.bottom,
+          ),
+          child: Container(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text(
+                      'Cancel Booking',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w700,
+                        color: Color(0xFF1A1A1A),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.close),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Customer will receive a full refund (100%)',
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Colors.grey[600],
+                  ),
+                ),
+                const SizedBox(height: 24),
+                // Reason input (mandatory)
+                const Text(
+                  'Reason for cancellation *',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF1A1A1A),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: reasonController,
+                  maxLines: 3,
+                  decoration: InputDecoration(
+                    hintText: 'Please provide a reason...',
+                    filled: true,
+                    fillColor: Colors.grey[100],
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide.none,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: isProcessing ? null : () async {
+                      if (reasonController.text.trim().isEmpty) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Please provide a cancellation reason'),
+                            backgroundColor: Colors.red,
+                          ),
+                        );
+                        return;
+                      }
+                      
+                      setModalState(() => isProcessing = true);
+                      
+                      await _userDataProvider.cancelBookingByBarber(
+                        booking.id,
+                        reasonController.text.trim(),
+                      );
+                      
+                      Navigator.pop(context);
+                      
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Booking cancelled. Customer has been refunded.'),
+                            backgroundColor: Color(0xFF4CAF50),
+                          ),
+                        );
+                      }
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.red,
+                      disabledBackgroundColor: Colors.grey,
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    child: isProcessing
+                        ? const SizedBox(
+                            height: 20,
+                            width: 20,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        : const Text(
+                            'Confirm Cancellation',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.white,
+                            ),
+                          ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showCompleteDialog(Booking booking) {
+    int selectedRating = 5;
+    final commentController = TextEditingController();
+    bool isProcessing = false;
+    
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setModalState) => Padding(
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.of(context).viewInsets.bottom,
+          ),
+          child: Container(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text(
+                      'Complete Booking',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w700,
+                        color: Color(0xFF1A1A1A),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.close),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Rate your customer experience',
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Colors.grey[600],
+                  ),
+                ),
+                const SizedBox(height: 24),
+                // Customer info
+                Row(
+                  children: [
+                    Container(
+                      width: 48,
+                      height: 48,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(12),
+                        image: booking.customerImageUrl != null && booking.customerImageUrl!.isNotEmpty
+                            ? DecorationImage(
+                                image: NetworkImage(booking.customerImageUrl!),
+                                fit: BoxFit.cover,
+                              )
+                            : null,
+                        color: Colors.grey[200],
+                      ),
+                      child: booking.customerImageUrl == null || booking.customerImageUrl!.isEmpty
+                          ? const Icon(Icons.person, color: Colors.grey)
+                          : null,
+                    ),
+                    const SizedBox(width: 12),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          booking.customerName ?? 'Customer',
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        Text(
+                          '${booking.shortDate} · ${booking.timeSlot}',
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: Colors.grey[600],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 24),
+                // Rating stars
+                const Text(
+                  'Rate Customer *',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF1A1A1A),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: List.generate(5, (index) {
+                    return GestureDetector(
+                      onTap: () {
+                        setModalState(() {
+                          selectedRating = index + 1;
+                        });
+                      },
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        child: Icon(
+                          index < selectedRating ? Icons.star : Icons.star_border,
+                          size: 40,
+                          color: const Color(0xFFFFB800),
+                        ),
+                      ),
+                    );
+                  }),
+                ),
+                const SizedBox(height: 24),
+                // Comment (optional)
+                const Text(
+                  'Comment (optional)',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF1A1A1A),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: commentController,
+                  maxLines: 2,
+                  decoration: InputDecoration(
+                    hintText: 'Add a note about this customer...',
+                    filled: true,
+                    fillColor: Colors.grey[100],
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      borderSide: BorderSide.none,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 24),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: isProcessing ? null : () async {
+                      setModalState(() => isProcessing = true);
+                      
+                      await _userDataProvider.completeBooking(
+                        booking.id,
+                        selectedRating,
+                        commentController.text.trim().isEmpty 
+                            ? null 
+                            : commentController.text.trim(),
+                      );
+                      
+                      Navigator.pop(context);
+                      
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Row(
+                              children: [
+                                const Icon(Icons.check_circle, color: Colors.white),
+                                const SizedBox(width: 12),
+                                Text('Booking completed! +PKR ${booking.pricePKR}'),
+                              ],
+                            ),
+                            backgroundColor: const Color(0xFF4CAF50),
+                          ),
+                        );
+                      }
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF4CAF50),
+                      disabledBackgroundColor: Colors.grey,
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    child: isProcessing
+                        ? const SizedBox(
+                            height: 20,
+                            width: 20,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        : const Text(
+                            'Mark as Completed',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.white,
+                            ),
+                          ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+enum BookingListType {
+  pending,
+  upcoming,
+  completed,
+  cancelled,
+}
