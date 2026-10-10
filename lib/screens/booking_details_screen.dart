@@ -38,9 +38,17 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
 
   /// Refresh booking data from Firestore
   Future<void> _refreshBooking() async {
-    final fresh = await _engine.getBooking(_booking.id);
-    if (fresh != null && mounted) {
-      setState(() => _booking = fresh);
+    var fresh = await _engine.getBooking(_booking.id);
+
+    // 15-MIN TIMEOUT: if the barber never answered, reroute now and re-read.
+    if (fresh != null && _engine.needsAutoReroute(fresh)) {
+      await _engine.autoRerouteIfExpired(fresh);
+      fresh = await _engine.getBooking(_booking.id) ?? fresh;
+    }
+
+    final updated = fresh;
+    if (updated != null && mounted) {
+      setState(() => _booking = updated);
     }
   }
 
@@ -169,6 +177,14 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
           title = 'Waiting for Barber';
           subtitle = 'Your request is being reviewed';
         }
+        break;
+      case BookingStatus.rerouting:
+        bgColor = const Color(0xFF9C27B0).withValues(alpha: 0.1);
+        iconColor = const Color(0xFF9C27B0);
+        icon = Icons.alt_route;
+        title = 'Finding Another Barber';
+        subtitle = 'The barber didn\'t respond in 15 minutes — '
+            'routing your request to the next nearest barber';
         break;
       case BookingStatus.confirmed:
         bgColor = const Color(0xFF00AA5B).withValues(alpha: 0.1);
@@ -972,12 +988,12 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
+          const Row(
             children: [
-              const Icon(Icons.info_outline,
+              Icon(Icons.info_outline,
                   color: Color(0xFFFF4444), size: 20),
-              const SizedBox(width: 8),
-              const Text(
+              SizedBox(width: 8),
+              Text(
                 'Cancellation Details',
                 style: TextStyle(
                     fontSize: 15,
@@ -1516,15 +1532,31 @@ class _BookingDetailsScreenState extends State<BookingDetailsScreen> {
                         ? null
                         : () async {
                             Navigator.pop(ctx);
+
+                            // Defensive: never let a malformed "HH:mm" crash
+                            // the view — bail out with a message instead.
+                            final time = parseTimeSlot(selectedSlot);
+                            if (time == null) {
+                              if (mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                    content: Text(
+                                        'That time slot looks invalid. Please pick another.'),
+                                    backgroundColor: Color(0xFFFF4444),
+                                  ),
+                                );
+                              }
+                              return;
+                            }
+
                             setState(() => _isLoading = true);
 
-                            final parts = selectedSlot!.split(':');
                             final newDt = DateTime(
                               selectedDate.year,
                               selectedDate.month,
                               selectedDate.day,
-                              int.parse(parts[0]),
-                              int.parse(parts[1]),
+                              time.hour,
+                              time.minute,
                             );
 
                             final result =
@@ -1674,7 +1706,8 @@ class _SwitchBarberSheetState extends State<_SwitchBarberSheet> {
 
   Future<void> _loadBarbers() async {
     // Stream first snapshot of approved barbers
-    widget.firestoreService.streamApprovedBarbers().first.then((barbers) {
+    try {
+      final barbers = await widget.firestoreService.streamApprovedBarbers().first;
       if (mounted) {
         setState(() {
           _barbers = barbers
@@ -1683,7 +1716,17 @@ class _SwitchBarberSheetState extends State<_SwitchBarberSheet> {
           _loading = false;
         });
       }
-    });
+    } catch (e) {
+      // Don't spin forever on a Firestore error — fall through to the
+      // "No other barbers available" empty state.
+      debugPrint('⚠️ RerouteSheet: Failed to load barbers: $e');
+      if (mounted) {
+        setState(() {
+          _barbers = [];
+          _loading = false;
+        });
+      }
+    }
   }
 
   @override

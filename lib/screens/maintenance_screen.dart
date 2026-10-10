@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import '../data/user_data_provider.dart';
-import '../widgets/admin_override_indicator.dart';
 
 /// Maintenance Screen - Shows when system is frozen or account is disabled
 class MaintenanceScreen extends StatefulWidget {
@@ -128,20 +127,20 @@ class _MaintenanceScreenState extends State<MaintenanceScreen> {
                   ),
                   child: Column(
                     children: [
-                      Row(
+                      const Row(
                         children: [
                           Icon(
                             Icons.security,
-                            color: const Color(0xFF2196F3),
+                            color: Color(0xFF2196F3),
                             size: 20,
                           ),
-                          const SizedBox(width: 8),
+                          SizedBox(width: 8),
                           Text(
                             'Admin Protected',
                             style: TextStyle(
                               fontSize: 14,
                               fontWeight: FontWeight.w600,
-                              color: const Color(0xFF2196F3),
+                              color: Color(0xFF2196F3),
                             ),
                           ),
                         ],

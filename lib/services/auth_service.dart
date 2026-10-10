@@ -1,3 +1,5 @@
+import 'dart:async' show unawaited;
+
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../config/dev_config.dart';
@@ -167,6 +169,7 @@ class AuthService {
     required String email,
     required String normalizedPhone,
     required UserRole role,
+    Map<String, dynamic> profileOverrides = const {},
   }) async {
     // Create user document in Firestore with ONLY the selected role
     final Map<String, dynamic> userData = {
@@ -226,6 +229,8 @@ class AuthService {
       }
     }
 
+    userData.addAll(profileOverrides);
+
     // Save user profile to Firestore
     print('💾 AuthService: Creating Firestore user document for $userId...');
     await _firestore.collection('users').doc(userId).set(userData);
@@ -258,6 +263,7 @@ class AuthService {
       e164Phone: normalizedPhone,
       userId: userId,
       role: role,
+      email: email,
     );
     print('✅ AuthService: Phone registered successfully');
   }
@@ -432,6 +438,9 @@ class AuthService {
     final existing = await getUserData(user.uid);
     if (existing != null) {
       print('ℹ️ AuthService.ensureProfileForPhoneUser: Profile exists (role: ${existing['role']})');
+      if (existing['role'] == UserRole.barber.name) {
+        await _seedDemoBarberDefaults(user.uid, existing);
+      }
       return AuthResult.success(user.uid);
     }
 
@@ -443,7 +452,15 @@ class AuthService {
         email: user.email ?? '',
         normalizedPhone: normalizePhoneToE164(phone),
         role: role,
+        // 'status' can only be set at creation — rules block barbers from
+        // changing it later — so the demo barber is approved up front.
+        profileOverrides: role == UserRole.barber
+            ? {..._demoBarberProfile, 'status': BarberStatus.approved.name}
+            : const {},
       );
+      if (role == UserRole.barber) {
+        await _seedDemoBarberServices(user.uid);
+      }
       return AuthResult.success(user.uid);
     } catch (e) {
       print('💥 AuthService.ensureProfileForPhoneUser: Profile creation failed: $e');
@@ -454,6 +471,92 @@ class AuthService {
       } catch (_) {}
       return AuthResult.failure(
           'Account setup failed. Please check your internet connection and try again.');
+    }
+  }
+
+  /// Bookable defaults for the demo barber (Peshawar). Working hours use the
+  /// same integer-hour format as signup.
+  static const Map<String, dynamic> _demoBarberProfile = {
+    'shopName': 'Best Cut Studio',
+    'address': 'University Road, Peshawar',
+    'isOnline': true,
+    'latitude': 34.0151,
+    'longitude': 71.5249,
+    'workStartHour': 9,
+    'workEndHour': 23,
+    'daysOff': <int>[],
+    'priceStartingPKR': 500,
+    'services': ['Haircut', 'Beard Trim', 'Haircut + Beard'],
+  };
+
+  static const List<Map<String, dynamic>> _demoBarberServices = [
+    {'name': 'Haircut', 'pricePKR': 1000, 'category': 'Hair', 'emoji': '✂️', 'durationMinutes': 30},
+    {'name': 'Beard Trim', 'pricePKR': 500, 'category': 'Face', 'emoji': '🧔', 'durationMinutes': 15},
+    {'name': 'Haircut + Beard', 'pricePKR': 1300, 'category': 'Combo', 'emoji': '💈', 'durationMinutes': 45},
+  ];
+
+  /// Fill any empty bookable fields on an existing demo barber profile and
+  /// make sure they have services. Never fails the login.
+  Future<void> _seedDemoBarberDefaults(
+      String uid, Map<String, dynamic> existing) async {
+    bool isEmpty(dynamic v) =>
+        v == null || (v is String && v.trim().isEmpty) || (v is num && v == 0) ||
+        (v is List && v.isEmpty);
+
+    final updates = <String, dynamic>{};
+    _demoBarberProfile.forEach((key, value) {
+      if (key == 'isOnline' || key == 'daysOff') return;
+      if (isEmpty(existing[key])) updates[key] = value;
+    });
+    if (existing['daysOff'] == null) updates['daysOff'] = <int>[];
+
+    // Rules only let approved barbers go online; 'status' itself is locked.
+    if (existing['status'] == BarberStatus.approved.name &&
+        existing['isOnline'] != true) {
+      updates['isOnline'] = true;
+    } else if (existing['status'] != BarberStatus.approved.name) {
+      print('⚠️ AuthService: Demo barber $uid is "${existing['status']}" — '
+          'approve it in the console to make it bookable.');
+    }
+
+    if (updates.isNotEmpty) {
+      try {
+        updates['updatedAt'] = FieldValue.serverTimestamp();
+        await _firestore.collection('users').doc(uid).update(updates);
+        print('🌱 AuthService: Seeded demo barber fields ${updates.keys.toList()}');
+      } catch (e) {
+        print('⚠️ AuthService: Demo barber profile seed failed: $e');
+      }
+    }
+
+    await _seedDemoBarberServices(uid);
+  }
+
+  /// Create the default service menu if the barber has none yet.
+  Future<void> _seedDemoBarberServices(String uid) async {
+    try {
+      final col = _firestore.collection('barberServices');
+      final existing =
+          await col.where('barberId', isEqualTo: uid).limit(1).get();
+      if (existing.docs.isNotEmpty) return;
+
+      final batch = _firestore.batch();
+      for (final service in _demoBarberServices) {
+        batch.set(col.doc(), {
+          ...service,
+          'barberId': uid,
+          'type': 'defaultService',
+          'isEnabled': true,
+          'comboServiceIds': <String>[],
+          'comboServiceNames': <String>[],
+          'createdAt': FieldValue.serverTimestamp(),
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+      }
+      await batch.commit();
+      print('🌱 AuthService: Seeded ${_demoBarberServices.length} demo services for $uid');
+    } catch (e) {
+      print('⚠️ AuthService: Demo barber services seed failed: $e');
     }
   }
 
@@ -483,6 +586,9 @@ class AuthService {
       print('✅ AuthService.signIn: SUCCESS - UID: $uid, Email: $userEmail');
       print('🔍 AuthService.signIn: Checking auth.currentUser...');
       print('👤 AuthService.signIn: auth.currentUser: ${_auth.currentUser?.uid ?? 'NULL'}');
+
+      // Fire-and-forget: let this user log in by phone next time.
+      unawaited(_backfillPhoneRegistryEmail(uid, userEmail ?? email));
 
       return AuthResult.success(uid);
     } on FirebaseAuthException catch (e) {
@@ -694,16 +800,103 @@ class AuthService {
   }
 
   /// Register a phone number in the registry (called during signup).
+  ///
+  /// Stores the account [email] alongside the phone so the login screen can
+  /// resolve "phone → email" (see [resolveEmailForPhone]).
   Future<void> _registerPhoneNumber({
     required String e164Phone,
     required String userId,
     required UserRole role,
+    String? email,
   }) async {
     await _firestore.collection('phone_registry').doc(e164Phone).set({
       'userId': userId,
       'role': role.name,
+      if (email != null && email.isNotEmpty) 'email': email,
       'createdAt': FieldValue.serverTimestamp(),
     });
+  }
+
+  // ===========================================================================
+  // Login with phone number (phone → email resolution)
+  // ===========================================================================
+
+  /// Heuristic: does [input] look like a phone number rather than an email?
+  ///
+  /// Accepts an optional leading `+`, digits, spaces, dashes and parentheses,
+  /// with at least 7 digits (e.g. `03001234567`, `+92 300 1234567`).
+  static bool looksLikePhoneNumber(String input) {
+    final value = input.trim();
+    if (value.isEmpty || value.contains('@')) return false;
+    if (!RegExp(r'^\+?[\d\s\-\(\)]+$').hasMatch(value)) return false;
+    final digitCount = value.replaceAll(RegExp(r'[^\d]'), '').length;
+    return digitCount >= 7;
+  }
+
+  /// Resolve the account email registered for [phone].
+  ///
+  /// Normalizes [phone] to E.164 and performs a point-read on
+  /// `phone_registry/{e164}` — no query, no index required. Works before the
+  /// user is signed in (Firestore rules allow unauthenticated `get` on that
+  /// collection for exactly this purpose).
+  Future<PhoneLookupResult> resolveEmailForPhone(String phone) async {
+    final normalized = normalizePhoneToE164(phone);
+    print('🔎 AuthService.resolveEmailForPhone: $phone → $normalized');
+
+    try {
+      final doc =
+          await _firestore.collection('phone_registry').doc(normalized).get();
+
+      if (!doc.exists) {
+        print('ℹ️ AuthService.resolveEmailForPhone: No account for $normalized');
+        return PhoneLookupResult.notFound(normalized);
+      }
+
+      final data = doc.data() ?? const <String, dynamic>{};
+      final email = (data['email'] as String?)?.trim();
+      if (email == null || email.isEmpty) {
+        // Legacy registry entry created before emails were stored, or a
+        // phone-only (OTP) account that has no password to log in with.
+        print('ℹ️ AuthService.resolveEmailForPhone: Registry entry has no email');
+        return PhoneLookupResult.noEmailOnRecord(normalized);
+      }
+
+      print('✅ AuthService.resolveEmailForPhone: Resolved to $email');
+      return PhoneLookupResult.found(normalized, email);
+    } on FirebaseException catch (e) {
+      print('❌ AuthService.resolveEmailForPhone: ${e.code} - ${e.message}');
+      return PhoneLookupResult.unavailable(normalized, e.code);
+    } catch (e) {
+      print('❌ AuthService.resolveEmailForPhone: Unexpected error: $e');
+      return PhoneLookupResult.unavailable(normalized, 'unknown');
+    }
+  }
+
+  /// Best-effort backfill: after a successful email/password sign-in, make
+  /// sure this user's `phone_registry` entry carries their email so they can
+  /// log in with their phone number next time. Never throws.
+  Future<void> _backfillPhoneRegistryEmail(String userId, String? email) async {
+    if (email == null || email.isEmpty) return;
+    try {
+      final userDoc = await _firestore.collection('users').doc(userId).get();
+      final phone = (userDoc.data()?['phone'] as String?)?.trim();
+      if (phone == null || phone.isEmpty) return;
+
+      final registryRef =
+          _firestore.collection('phone_registry').doc(normalizePhoneToE164(phone));
+      final registry = await registryRef.get();
+      if (!registry.exists) return;
+
+      final data = registry.data() ?? const <String, dynamic>{};
+      if (data['userId'] != userId) return; // not ours — never touch it
+      if ((data['email'] as String?)?.isNotEmpty == true) return; // already set
+
+      await registryRef.update({'email': email});
+      print('✅ AuthService: Backfilled phone_registry email for $userId');
+    } catch (e) {
+      // Non-critical — rules may not be deployed yet, or offline.
+      print('⚠️ AuthService: phone_registry email backfill skipped: $e');
+    }
   }
 
   /// Convert Firebase Auth error codes to user-friendly messages
@@ -803,6 +996,49 @@ class AuthResult {
     );
   }
 }
+
+/// Outcome of resolving a phone number to an account email for login.
+class PhoneLookupResult {
+  /// The E.164 phone that was looked up.
+  final String phone;
+
+  /// Resolved account email (only when [isFound]).
+  final String? email;
+
+  final PhoneLookupStatus status;
+
+  const PhoneLookupResult._(this.phone, this.status, [this.email]);
+
+  factory PhoneLookupResult.found(String phone, String email) =>
+      PhoneLookupResult._(phone, PhoneLookupStatus.found, email);
+  factory PhoneLookupResult.notFound(String phone) =>
+      PhoneLookupResult._(phone, PhoneLookupStatus.notFound);
+  factory PhoneLookupResult.noEmailOnRecord(String phone) =>
+      PhoneLookupResult._(phone, PhoneLookupStatus.noEmailOnRecord);
+  factory PhoneLookupResult.unavailable(String phone, String code) =>
+      PhoneLookupResult._(phone, PhoneLookupStatus.unavailable);
+
+  bool get isFound => status == PhoneLookupStatus.found && email != null;
+
+  /// User-facing explanation for non-success outcomes.
+  String get userMessage {
+    switch (status) {
+      case PhoneLookupStatus.found:
+        return '';
+      case PhoneLookupStatus.notFound:
+        return 'No account found with this phone number. '
+            'Please check the number or create an account.';
+      case PhoneLookupStatus.noEmailOnRecord:
+        return 'Phone sign-in isn\'t set up for this account yet. '
+            'Please sign in with your email address once to enable it.';
+      case PhoneLookupStatus.unavailable:
+        return 'Couldn\'t look up this phone number right now. '
+            'Please sign in with your email or try again later.';
+    }
+  }
+}
+
+enum PhoneLookupStatus { found, notFound, noEmailOnRecord, unavailable }
 
 /// User roles - A user can ONLY be ONE of these
 enum UserRole {

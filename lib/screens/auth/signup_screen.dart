@@ -1,7 +1,6 @@
 import 'package:firebase_auth/firebase_auth.dart' show PhoneAuthCredential;
 import 'package:flutter/material.dart';
 import '../../services/auth_service.dart';
-import '../../data/user_data_provider.dart';
 import '../../config/dev_config.dart';
 import '../../main.dart';
 import 'otp_screen.dart';

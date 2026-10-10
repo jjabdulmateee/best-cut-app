@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../widgets/v2_notice.dart';
 
 class PaymentMethodsScreen extends StatefulWidget {
   const PaymentMethodsScreen({super.key});
@@ -97,7 +98,7 @@ class _PaymentMethodsScreenState extends State<PaymentMethodsScreen> {
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(
-                      'Real payment integration coming soon. For now, use Wallet or Cash.',
+                      'Payment linking is scheduled for V2. For now, use Wallet or Cash.',
                       style: TextStyle(
                         fontSize: 13,
                         color: Colors.blue[700],
@@ -123,12 +124,7 @@ class _PaymentMethodsScreenState extends State<PaymentMethodsScreen> {
     return InkWell(
       onTap: () {
         Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('$title integration coming soon!'),
-            duration: const Duration(seconds: 2),
-          ),
-        );
+        showV2Notice(context, title);
       },
       borderRadius: BorderRadius.circular(12),
       child: Container(

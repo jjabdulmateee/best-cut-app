@@ -70,20 +70,20 @@ class _DisputeCreationScreenState extends State<DisputeCreationScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Row(
+                    const Row(
                       children: [
                         Icon(
                           Icons.warning_amber_rounded,
-                          color: const Color(0xFFFF9800),
+                          color: Color(0xFFFF9800),
                           size: 20,
                         ),
-                        const SizedBox(width: 8),
+                        SizedBox(width: 8),
                         Text(
                           'Dispute Process',
                           style: TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.w600,
-                            color: const Color(0xFFFF9800),
+                            color: Color(0xFFFF9800),
                           ),
                         ),
                       ],
@@ -112,12 +112,12 @@ class _DisputeCreationScreenState extends State<DisputeCreationScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
+                    const Text(
                       'Booking Details',
                       style: TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.w600,
-                        color: const Color(0xFF1A1A1A),
+                        color: Color(0xFF1A1A1A),
                       ),
                     ),
                     const SizedBox(height: 12),
@@ -244,9 +244,9 @@ class _DisputeCreationScreenState extends State<DisputeCreationScreen> {
                   ),
                   child: Row(
                     children: [
-                      Icon(
+                      const Icon(
                         Icons.error_outline,
-                        color: const Color(0xFFF44336),
+                        color: Color(0xFFF44336),
                         size: 20,
                       ),
                       const SizedBox(width: 8),

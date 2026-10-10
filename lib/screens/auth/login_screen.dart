@@ -1,7 +1,6 @@
 import 'package:firebase_auth/firebase_auth.dart' show PhoneAuthCredential;
 import 'package:flutter/material.dart';
 import '../../services/auth_service.dart';
-import '../../data/user_data_provider.dart';
 import '../../main.dart';
 import 'signup_screen.dart';
 import 'forgot_password_screen.dart';
@@ -45,19 +44,39 @@ class _LoginScreenState extends State<LoginScreen> {
       _errorMessage = null;
     });
 
+    // ── Resolve identifier: email OR phone number ──
+    // If the user typed a phone number, normalize it to E.164 and look up the
+    // account email in `phone_registry`, then continue with the normal
+    // email/password sign-in using that email.
+    final identifier = _emailController.text.trim();
+    String email = identifier;
+
+    if (AuthService.looksLikePhoneNumber(identifier)) {
+      final lookup = await _authService.resolveEmailForPhone(identifier);
+      if (!mounted) return;
+      if (!lookup.isFound) {
+        setState(() {
+          _isLoading = false;
+          _errorMessage = lookup.userMessage;
+        });
+        return;
+      }
+      email = lookup.email!;
+    }
+
     // Use role-checked sign-in when a role is expected (centralized in AuthService).
     // This ensures a barber can NEVER enter the customer section and vice versa.
     final AuthResult result;
     if (widget.expectedRole != null) {
       result = await _authService.signInWithRoleCheck(
-        email: _emailController.text.trim(),
+        email: email,
         password: _passwordController.text,
         expectedRole: widget.expectedRole!,
       );
     } else {
       // Fallback for direct login without role context (unlikely in normal flow)
       result = await _authService.signIn(
-        email: _emailController.text.trim(),
+        email: email,
         password: _passwordController.text,
       );
     }
@@ -295,12 +314,23 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 
-  String? _validateEmail(String? value) {
-    if (value == null || value.isEmpty) {
-      return 'Please enter your email';
+  /// Validates the "Email or Phone Number" field.
+  String? _validateIdentifier(String? value) {
+    final v = value?.trim() ?? '';
+    if (v.isEmpty) {
+      return 'Please enter your email or phone number';
     }
-    if (!_emailRegex.hasMatch(value)) {
-      return 'Please enter a valid email address';
+
+    if (AuthService.looksLikePhoneNumber(v)) {
+      final normalized = AuthService.normalizePhoneToE164(v);
+      final digits = normalized.replaceAll(RegExp(r'[^\d]'), '');
+      if (digits.length < 8) return 'Phone number is too short';
+      if (digits.length > 15) return 'Phone number is too long';
+      return null;
+    }
+
+    if (!_emailRegex.hasMatch(v)) {
+      return 'Enter a valid email address or phone number (e.g. 03XX-XXXXXXX)';
     }
     return null;
   }
@@ -450,16 +480,16 @@ class _LoginScreenState extends State<LoginScreen> {
                   const SizedBox(height: 20),
                 ],
 
-                // Email field
+                // Email OR phone field
                 TextFormField(
                   controller: _emailController,
                   keyboardType: TextInputType.emailAddress,
                   textInputAction: TextInputAction.next,
                   autocorrect: false,
                   decoration: InputDecoration(
-                    labelText: 'Email',
-                    hintText: 'Enter your email',
-                    prefixIcon: const Icon(Icons.email_outlined),
+                    labelText: 'Email or Phone Number',
+                    hintText: 'you@example.com or 03XX-XXXXXXX',
+                    prefixIcon: const Icon(Icons.alternate_email),
                     filled: true,
                     fillColor: const Color(0xFFF5F5F5),
                     border: OutlineInputBorder(
@@ -483,7 +513,7 @@ class _LoginScreenState extends State<LoginScreen> {
                       borderSide: BorderSide(color: Colors.red[400]!, width: 2),
                     ),
                   ),
-                  validator: _validateEmail,
+                  validator: _validateIdentifier,
                 ),
                 const SizedBox(height: 16),
 
@@ -617,27 +647,31 @@ class _LoginScreenState extends State<LoginScreen> {
                   ],
                 ),
                 const SizedBox(height: 16),
-                _DemoButton(
-                  icon: Icons.person_outline,
-                  label: 'One-Tap Demo Customer',
-                  phoneLabel: '+92 300 1234567',
-                  isRunning: _demoInProgress == UserRole.customer,
-                  enabled: !_anyActionRunning,
-                  onPressed: () => _handleDemoLogin(UserRole.customer),
-                ),
-                const SizedBox(height: 12),
-                _DemoButton(
-                  icon: Icons.content_cut,
-                  label: 'One-Tap Demo Barber',
-                  phoneLabel: '+92 300 7654321',
-                  isRunning: _demoInProgress == UserRole.barber,
-                  enabled: !_anyActionRunning,
-                  onPressed: () => _handleDemoLogin(UserRole.barber),
-                ),
+                // Only show the demo button matching this section's role.
+                // With no role context (direct access) both are shown.
+                if (widget.expectedRole != UserRole.barber)
+                  _DemoButton(
+                    icon: Icons.person_outline,
+                    label: 'One-Tap Demo Customer',
+                    phoneLabel: '+92 300 1234567',
+                    isRunning: _demoInProgress == UserRole.customer,
+                    enabled: !_anyActionRunning,
+                    onPressed: () => _handleDemoLogin(UserRole.customer),
+                  ),
+                if (!hasExpectedRole) const SizedBox(height: 12),
+                if (widget.expectedRole != UserRole.customer)
+                  _DemoButton(
+                    icon: Icons.content_cut,
+                    label: 'One-Tap Demo Barber',
+                    phoneLabel: '+92 300 7654321',
+                    isRunning: _demoInProgress == UserRole.barber,
+                    enabled: !_anyActionRunning,
+                    onPressed: () => _handleDemoLogin(UserRole.barber),
+                  ),
                 const SizedBox(height: 10),
                 Text(
-                  'Signs in through the real Firebase phone OTP flow using '
-                  'Firebase test numbers (code 123456 is pre-filled and auto-submitted).',
+                  'Signs in through the real Firebase phone OTP flow using a '
+                  'Firebase test number (code 123456 is pre-filled and auto-submitted).',
                   textAlign: TextAlign.center,
                   style: TextStyle(fontSize: 12, color: Colors.grey[600], height: 1.4),
                 ),

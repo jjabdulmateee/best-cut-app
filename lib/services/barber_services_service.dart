@@ -16,26 +16,32 @@ class BarberServicesService {
 
   // ─────────────────────── READ ───────────────────────
 
-  /// Real-time stream of all services for a barber, ordered newest-first.
+  /// Real-time stream of all services for a barber, newest first.
+  ///
+  /// Sorted in memory so the list updates without a composite index. An
+  /// `orderBy('createdAt')` query fails (and looks empty) until that index
+  /// is deployed.
   Stream<List<BarberService>> streamServices(String barberId) {
     return _col
         .where('barberId', isEqualTo: barberId)
-        .orderBy('createdAt', descending: false)
         .snapshots()
-        .map((snap) => snap.docs
-            .map((doc) => BarberService.fromMap(doc.data(), doc.id))
-            .toList());
+        .map((snap) {
+          final services = snap.docs
+              .map((doc) => BarberService.fromMap(doc.data(), doc.id))
+              .toList();
+          services.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+          return services;
+        });
   }
 
   /// One-shot fetch (useful for initial checks).
   Future<List<BarberService>> getServices(String barberId) async {
-    final snap = await _col
-        .where('barberId', isEqualTo: barberId)
-        .orderBy('createdAt', descending: false)
-        .get();
-    return snap.docs
+    final snap = await _col.where('barberId', isEqualTo: barberId).get();
+    final services = snap.docs
         .map((doc) => BarberService.fromMap(doc.data(), doc.id))
         .toList();
+    services.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    return services;
   }
 
   // ─────────────────────── CREATE ───────────────────────

@@ -113,8 +113,8 @@ class UserDataProvider extends ChangeNotifier {
   int get barberTotalReviews => _safeInt(_userData?['totalReviews']);
   int get barberPriceStartingPKR => _safeInt(_userData?['priceStartingPKR']);
   List<String> get barberServices => List<String>.from(_userData?['services'] ?? []);
-  int get workStartHour => _safeInt(_userData?['workStartHour'], 9);
-  int get workEndHour => _safeInt(_userData?['workEndHour'], 18);
+  int get workStartHour => _hourFrom(_userData?['workStartHour'], 9);
+  int get workEndHour => _hourFrom(_userData?['workEndHour'], 18);
   int get slotDurationMinutes => _safeInt(_userData?['slotDurationMinutes'], 30);
   BarberStatus get barberStatus {
     final statusStr = _safeString(_userData?['status'], 'draft');
@@ -236,7 +236,7 @@ class UserDataProvider extends ChangeNotifier {
     }
   }
 
-  /// Update barber profile (SECURE - via Cloud Functions)
+  /// Update the signed-in barber's own `users/{uid}` document.
   Future<void> updateBarberProfile({
     required String name,
     required String phone,
@@ -244,17 +244,19 @@ class UserDataProvider extends ChangeNotifier {
     required String address,
   }) async {
     try {
-      // Check system restrictions first
       if (!canUpdateProfile) {
         throw Exception('Cannot update profile: $restrictionMessage');
       }
+      final userId = _userId;
+      if (userId == null) throw Exception('Not signed in');
 
-      await _cloudFunctions.updateBarberProfile(
-        name: name,
-        phone: phone,
-        shopName: shopName,
-        address: address,
-      );
+      await _firestore.collection('users').doc(userId).update({
+        'name': name,
+        'phone': phone,
+        'shopName': shopName,
+        'address': address,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
     } catch (e) {
       debugPrint('Update barber profile error: $e');
       rethrow;
@@ -537,7 +539,7 @@ class UserDataProvider extends ChangeNotifier {
     
     // Check working hours
     if (!isWithinWorkingHours) {
-      return 'You can only go online during your working hours (${formattedWorkingHours})';
+      return 'You can only go online during your working hours ($formattedWorkingHours)';
     }
     
     // Check if today is day off
@@ -589,24 +591,34 @@ class UserDataProvider extends ChangeNotifier {
   /// Get barber's days off
   List<int> get barberDaysOff => List<int>.from(_userData?['daysOff'] ?? []);
 
-  /// Set barber online status with validation (SECURE - via Cloud Functions)
+  /// Set barber online status. Writes `isOnline` on the barber's own user doc.
   Future<bool> setBarberOnlineStatus(bool isOnline) async {
     try {
-      // Check system restrictions first
       if (hasSystemRestrictions) {
         throw Exception('System restrictions active: $restrictionMessage');
       }
 
-    // If going online, validate
-    if (isOnline) {
-      final validationError = canBarberGoOnline();
-      if (validationError != null) {
+      if (isOnline) {
+        final validationError = canBarberGoOnline();
+        if (validationError != null) {
           throw Exception(validationError);
         }
       }
 
-      final result = await _cloudFunctions.updateBarberOnlineStatus(isOnline);
-      return result['success'] == true;
+      final userId = _userId;
+      if (userId == null) return false;
+
+      await _firestore.collection('users').doc(userId).update({
+        'isOnline': isOnline,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+
+      // Flip the switch immediately; the user-doc listener confirms it.
+      if (_userData != null) {
+        _userData!['isOnline'] = isOnline;
+        notifyListeners();
+      }
+      return true;
     } catch (e) {
       debugPrint('Set barber online status error: $e');
       return false;
@@ -711,18 +723,50 @@ class UserDataProvider extends ChangeNotifier {
     }
   }
 
-  /// Update working hours (SECURE - via Cloud Functions)
-  Future<void> updateWorkingHours(String startHour, String endHour, {List<int>? daysOff}) async {
+  /// Save working hours on the barber's own `users/{uid}` document.
+  /// [startHour] and [endHour] are "HH:mm".
+  Future<void> updateWorkingHours(
+    String startHour,
+    String endHour, {
+    List<int>? daysOff,
+    int? slotDurationMinutes,
+  }) async {
     try {
-      await _cloudFunctions.updateBarberWorkingHours(
-        startHour: startHour,
-        endHour: endHour,
-        daysOff: daysOff ?? barberDaysOff,
-      );
+      final userId = _userId;
+      if (userId == null) throw Exception('Not signed in');
+
+      final offDays = daysOff ?? barberDaysOff;
+      final update = <String, dynamic>{
+        'workStartHour': startHour,
+        'workEndHour': endHour,
+        'daysOff': offDays,
+        'updatedAt': FieldValue.serverTimestamp(),
+      };
+      if (slotDurationMinutes != null) {
+        update['slotDurationMinutes'] = slotDurationMinutes;
+      }
+      await _firestore.collection('users').doc(userId).update(update);
+
+      if (_userData != null) {
+        _userData!['workStartHour'] = startHour;
+        _userData!['workEndHour'] = endHour;
+        _userData!['daysOff'] = offDays;
+        if (slotDurationMinutes != null) {
+          _userData!['slotDurationMinutes'] = slotDurationMinutes;
+        }
+        notifyListeners();
+      }
     } catch (e) {
       debugPrint('Update working hours error: $e');
       rethrow;
     }
+  }
+
+  /// Hour component of a working-hours field stored as an int (`9`) or "HH:mm".
+  static int _hourFrom(dynamic value, int fallback) {
+    final parsed = _parseHour(value, '');
+    if (parsed.isEmpty) return fallback;
+    return int.tryParse(parsed.split(':').first) ?? fallback;
   }
 
   /// Update days off
@@ -736,39 +780,42 @@ class UserDataProvider extends ChangeNotifier {
     });
   }
 
-  /// Toggle slot availability (SECURE - via Cloud Functions)
-  Future<void> toggleSlotAvailability(String dateKey, int slotIndex) async {
-    try {
-      // Get current closed slots
-      final currentClosed = await getClosedSlots(dateKey);
-      final newClosedSlots = List<int>.from(currentClosed);
+  /// Closed clock times ("HH:mm") for one day, stored on `slots/{uid}_{date}`.
+  Future<Set<String>> getClosedTimes(String dateKey) async {
+    final userId = _userId;
+    if (userId == null) return {};
 
-      if (newClosedSlots.contains(slotIndex)) {
-        newClosedSlots.remove(slotIndex);
-    } else {
-        newClosedSlots.add(slotIndex);
-      }
-
-      await _cloudFunctions.updateBarberClosedSlots(
-        dateKey: dateKey,
-        closedSlots: newClosedSlots,
-      );
-    } catch (e) {
-      debugPrint('Toggle slot availability error: $e');
-      rethrow;
-    }
+    final doc = await _firestore.collection('slots').doc('${userId}_$dateKey').get();
+    final raw = doc.data()?['closedTimes'];
+    if (raw is! List) return {};
+    return raw.map((e) => e.toString()).where((e) => e.contains(':')).toSet();
   }
 
-  /// Get closed slots for a date
+  /// Replace the closed times for one day. Keyed by clock time so changing
+  /// the slot interval does not scramble which slots are off.
+  Future<void> setClosedTimes(String dateKey, Set<String> closedTimes) async {
+    final userId = _userId;
+    if (userId == null) throw Exception('Not signed in');
+
+    await _firestore.collection('slots').doc('${userId}_$dateKey').set({
+      'barberId': userId,
+      'dateKey': dateKey,
+      'closedTimes': closedTimes.toList()..sort(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
+
+  /// Get closed slots for a date (legacy index list).
   Future<Set<int>> getClosedSlots(String dateKey) async {
     final userId = _userId;
     if (userId == null) return {};
 
     final doc = await _firestore.collection('slots').doc('${userId}_$dateKey').get();
     if (!doc.exists) return {};
-    
-    final data = doc.data();
-    return Set<int>.from(data?['closedSlots'] ?? []);
+
+    final raw = doc.data()?['closedSlots'];
+    if (raw is! List) return {};
+    return raw.map((e) => e is int ? e : int.tryParse('$e')).whereType<int>().toSet();
   }
 
   /// Complete booking and add earning (SECURE - via Cloud Functions)

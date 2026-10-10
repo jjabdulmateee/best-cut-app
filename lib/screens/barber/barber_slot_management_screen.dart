@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import '../../data/app_data.dart';
+import '../../data/user_data_provider.dart';
 
 class BarberSlotManagementScreen extends StatefulWidget {
   const BarberSlotManagementScreen({super.key});
@@ -9,34 +9,99 @@ class BarberSlotManagementScreen extends StatefulWidget {
 }
 
 class _BarberSlotManagementScreenState extends State<BarberSlotManagementScreen> {
-  final AppData _appData = AppData();
+  final UserDataProvider _userData = UserDataProvider();
   DateTime _selectedDate = DateTime.now();
   late int _startHour;
   late int _endHour;
   late int _slotDuration;
 
+  /// Closed clock times ("HH:mm") per day. Kept locally so a toggle stays
+  /// put while the Firestore write is in flight, and survives leaving
+  /// the screen because it is reloaded from `slots/{uid}_{date}`.
+  final Map<String, Set<String>> _closedTimes = {};
+  final Set<String> _loadedDates = {};
+
+  static const _durations = [15, 30, 45, 60];
+
   @override
   void initState() {
     super.initState();
-    _startHour = _appData.workStartHour;
-    _endHour = _appData.workEndHour;
-    _slotDuration = _appData.slotDurationMinutes;
+    _startHour = _userData.workStartHour.clamp(6, 17).toInt();
+    _endHour = _userData.workEndHour.clamp(12, 23).toInt();
+    if (_endHour <= _startHour) _endHour = (_startHour + 1).clamp(12, 23).toInt();
+    _slotDuration = _durations.contains(_userData.slotDurationMinutes)
+        ? _userData.slotDurationMinutes
+        : 30;
+    _loadClosedTimes(_dateKey(_selectedDate));
+  }
+
+  String _dateKey(DateTime date) => '${date.year}-${date.month}-${date.day}';
+
+  String _timeKey(int hour, int minute) =>
+      '${hour.toString().padLeft(2, '0')}:${minute.toString().padLeft(2, '0')}';
+
+  Future<void> _loadClosedTimes(String dateKey) async {
+    if (_loadedDates.contains(dateKey)) return;
+    _loadedDates.add(dateKey);
+    try {
+      final closed = await _userData.getClosedTimes(dateKey);
+      if (!mounted) return;
+      setState(() {
+        // A toggle that landed before this read wins.
+        _closedTimes.putIfAbsent(dateKey, () => closed);
+      });
+    } catch (e) {
+      _loadedDates.remove(dateKey);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not load slots: $e'), backgroundColor: Colors.red),
+      );
+    }
+  }
+
+  Future<void> _toggleSlot(_SlotData slot) async {
+    final dateKey = _dateKey(_selectedDate);
+    final current = Set<String>.from(_closedTimes[dateKey] ?? {});
+    if (current.contains(slot.timeKey)) {
+      current.remove(slot.timeKey);
+    } else {
+      current.add(slot.timeKey);
+    }
+    setState(() => _closedTimes[dateKey] = current);
+
+    try {
+      await _userData.setClosedTimes(dateKey, current);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        final reverted = Set<String>.from(_closedTimes[dateKey] ?? {});
+        if (reverted.contains(slot.timeKey)) {
+          reverted.remove(slot.timeKey);
+        } else {
+          reverted.add(slot.timeKey);
+        }
+        _closedTimes[dateKey] = reverted;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not update that slot: $e'), backgroundColor: Colors.red),
+      );
+    }
   }
 
   List<_SlotData> _generateSlots() {
     final slots = <_SlotData>[];
-    final dateKey = '${_selectedDate.year}-${_selectedDate.month}-${_selectedDate.day}';
-    final closedSlots = _appData.getClosedSlots(dateKey);
-    
-    int slotIndex = 0;
+    final dateKey = _dateKey(_selectedDate);
+    final closed = _closedTimes[dateKey] ?? {};
+
     for (int hour = _startHour; hour < _endHour; hour++) {
       for (int minute = 0; minute < 60; minute += _slotDuration) {
         if (hour + (minute + _slotDuration) / 60 > _endHour) break;
-        
+
         final isPM = hour >= 12;
         final displayHour = hour > 12 ? hour - 12 : (hour == 0 ? 12 : hour);
         final timeStr = '$displayHour:${minute.toString().padLeft(2, '0')} ${isPM ? 'PM' : 'AM'}';
-        
+        final timeKey = _timeKey(hour, minute);
+
         final slotDateTime = DateTime(
           _selectedDate.year,
           _selectedDate.month,
@@ -44,21 +109,19 @@ class _BarberSlotManagementScreenState extends State<BarberSlotManagementScreen>
           hour,
           minute,
         );
-        
+
         final isPast = slotDateTime.isBefore(DateTime.now());
-        final isClosed = closedSlots.contains(slotIndex);
-        
+        final isClosed = closed.contains(timeKey);
+
         slots.add(_SlotData(
-          index: slotIndex,
+          timeKey: timeKey,
           time: timeStr,
           isOpen: !isClosed && !isPast,
           isPast: isPast,
         ));
-        
-        slotIndex++;
       }
     }
-    
+
     return slots;
   }
 
@@ -127,6 +190,7 @@ class _BarberSlotManagementScreenState extends State<BarberSlotManagementScreen>
                 setState(() {
                   _selectedDate = date;
                 });
+                _loadClosedTimes(_dateKey(date));
               },
               child: Container(
                 width: 60,
@@ -330,12 +394,7 @@ class _BarberSlotManagementScreenState extends State<BarberSlotManagementScreen>
             : Colors.grey[400]!;
     
     return GestureDetector(
-      onTap: slot.isPast ? null : () {
-        final dateKey = '${_selectedDate.year}-${_selectedDate.month}-${_selectedDate.day}';
-        setState(() {
-          _appData.toggleSlotAvailability(dateKey, slot.index);
-        });
-      },
+      onTap: slot.isPast ? null : () => _toggleSlot(slot),
       child: Container(
         decoration: BoxDecoration(
           color: color.withOpacity(0.15),
@@ -482,10 +541,32 @@ class _BarberSlotManagementScreenState extends State<BarberSlotManagementScreen>
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton(
-                    onPressed: () {
-                      _appData.updateWorkingHours(_startHour, _endHour, _slotDuration);
-                      setState(() {});
-                      Navigator.pop(context);
+                    onPressed: () async {
+                      final navigator = Navigator.of(context);
+                      final messenger = ScaffoldMessenger.of(this.context);
+                      try {
+                        await _userData.updateWorkingHours(
+                          '${_startHour.toString().padLeft(2, '0')}:00',
+                          '${_endHour.toString().padLeft(2, '0')}:00',
+                          slotDurationMinutes: _slotDuration,
+                        );
+                        if (!mounted) return;
+                        setState(() {});
+                        navigator.pop();
+                        messenger.showSnackBar(
+                          const SnackBar(
+                            content: Text('Slot settings saved'),
+                            backgroundColor: Color(0xFF00C853),
+                          ),
+                        );
+                      } catch (e) {
+                        messenger.showSnackBar(
+                          SnackBar(
+                            content: Text('Could not save slot settings: $e'),
+                            backgroundColor: Colors.red,
+                          ),
+                        );
+                      }
                     },
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFF1A1A1A),
@@ -515,13 +596,13 @@ class _BarberSlotManagementScreenState extends State<BarberSlotManagementScreen>
 }
 
 class _SlotData {
-  final int index;
+  final String timeKey;
   final String time;
   final bool isOpen;
   final bool isPast;
 
   _SlotData({
-    required this.index,
+    required this.timeKey,
     required this.time,
     required this.isOpen,
     required this.isPast,

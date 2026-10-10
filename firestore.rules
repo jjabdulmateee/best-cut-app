@@ -79,15 +79,27 @@ service cloud.firestore {
     // check phone uniqueness or register new phone numbers.
     
     match /phone_registry/{phoneNumber} {
-      // Any authenticated user can check if a phone is taken (needed during signup)
-      allow read: if isAuthenticated();
+      // Point-reads (get by exact E.164 number) are allowed WITHOUT auth so the
+      // login screen can resolve "phone → email" before the user signs in.
+      // List/queries still require authentication, so the collection cannot
+      // be enumerated — a caller must already know the exact number.
+      allow get: if true;
+      allow list: if isAuthenticated();
       
       // Can only create for your own userId (during signup)
       allow create: if isAuthenticated() && 
                       request.resource.data.userId == request.auth.uid;
       
-      // Phone registry entries are immutable — cannot be updated or deleted by users
-      allow update, delete: if false;
+      // Owners may backfill ONLY the `email` field on their own entry
+      // (legacy entries created before emails were stored). Everything else
+      // stays immutable.
+      allow update: if isAuthenticated() &&
+                      resource.data.userId == request.auth.uid &&
+                      request.resource.data.diff(resource.data).affectedKeys()
+                        .hasOnly(['email']);
+      
+      // Phone registry entries cannot be deleted by users
+      allow delete: if false;
       
       // Admins have full access (for account management)
       allow read, write: if isAdmin();
@@ -152,8 +164,56 @@ service cloud.firestore {
                     (isAdmin() || 
                      resource.data.customerId == request.auth.uid || 
                      resource.data.barberId == request.auth.uid);
-      // STRICT: Client apps CANNOT write to bookings. Cloud Functions ONLY.
-      allow write: if false; 
+
+      // ── Statuses only a BARBER may set (acceptance lifecycle) ──
+      // 'confirmed' is this app's stored value for "accepted".
+      function isBarberOnlyStatus(s) {
+        return s in ['accepted', 'confirmed', 'rejected', 'completed'];
+      }
+
+      // CUSTOMER — create: must be the booking's customer, and a new booking
+      // can ONLY start in 'pending'. Customers can never create an accepted one.
+      allow create: if isAuthenticated() &&
+                      request.auth.uid == request.resource.data.customerId &&
+                      request.resource.data.status == 'pending';
+
+      // CUSTOMER — update (cancel / reschedule / reroute / 15-min auto-reroute):
+      // must own the booking, may NOT reassign it to someone else, and the
+      // resulting status must never be a barber-only status (so a customer
+      // cannot flip their own booking to 'accepted'/'confirmed'/'completed').
+      allow update: if isAuthenticated() &&
+                      request.auth.uid == resource.data.customerId &&
+                      request.resource.data.customerId == resource.data.customerId &&
+                      !isBarberOnlyStatus(request.resource.data.status);
+
+      // BARBER — update: must be the ASSIGNED barber and may only move the
+      // booking to accepted/confirmed, rejected, or completed. Reassigning the
+      // booking (barberId / customerId) is not allowed.
+      // The assigned barber may also release the booking (decline / emergency
+      // cancel) by setting 'rerouting' or 'cancelledByBarber'.
+      allow update: if isAuthenticated() &&
+                      request.auth.uid == resource.data.barberId &&
+                      request.resource.data.barberId == resource.data.barberId &&
+                      request.resource.data.customerId == resource.data.customerId &&
+                      (isBarberOnlyStatus(request.resource.data.status) ||
+                       request.resource.data.status in ['rerouting', 'cancelledByBarber']);
+
+      // BARBER — hand-off: after releasing a booking ('rerouting'), the
+      // releasing barber may assign it to a DIFFERENT barber as a fresh
+      // 'pending' request, and must be on the rejectedByBarbers ignore list.
+      allow update: if isAuthenticated() &&
+                      request.auth.uid == resource.data.barberId &&
+                      resource.data.status == 'rerouting' &&
+                      request.resource.data.status == 'pending' &&
+                      request.resource.data.customerId == resource.data.customerId &&
+                      request.resource.data.barberId != request.auth.uid &&
+                      request.auth.uid in request.resource.data.get('rejectedByBarbers', []);
+
+      // Nobody deletes bookings from the client.
+      allow delete: if false;
+
+      // Admins / Cloud Functions retain full access.
+      allow write: if isAdmin();
     }
 
     // ==================== REVIEWS COLLECTION ====================

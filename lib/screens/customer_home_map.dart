@@ -3,8 +3,8 @@ import '../models/barber.dart';
 import '../services/firestore_service.dart';
 import '../services/map_service.dart';
 import '../services/location_service.dart';
-import '../services/smart_agent_service.dart';
 import '../widgets/barber_card.dart';
+import '../widgets/query_error_view.dart';
 import 'barber_profile.dart';
 import 'booking_screen.dart';
 
@@ -17,7 +17,6 @@ class CustomerHomeMapScreen extends StatefulWidget {
 
 class _CustomerHomeMapScreenState extends State<CustomerHomeMapScreen> {
   final FirestoreService _firestoreService = FirestoreService();
-  final SmartAgentService _agent = SmartAgentService();
   final MapService _mapProvider = MockMapProvider(); // Swap with GoogleMapProvider later
   
   GeoPoint? _userLocation;
@@ -70,10 +69,19 @@ class _CustomerHomeMapScreenState extends State<CustomerHomeMapScreen> {
                 userLocation: currentLoc,
                 markers: markers,
                 onMarkerTap: (id) {
-                  final barber = barbers.firstWhere((b) => b.id == id);
+                  // Marker may refer to a barber that just went offline /
+                  // was removed from the stream — don't throw.
+                  Barber? barber;
+                  for (final b in barbers) {
+                    if (b.id == id) {
+                      barber = b;
+                      break;
+                    }
+                  }
+                  if (barber == null) return;
                   Navigator.push(
                     context,
-                    MaterialPageRoute(builder: (context) => BarberProfileScreen(barber: barber)),
+                    MaterialPageRoute(builder: (context) => BarberProfileScreen(barber: barber!)),
                   );
                 },
               );
@@ -137,7 +145,7 @@ class _CustomerHomeMapScreenState extends State<CustomerHomeMapScreen> {
 
   Widget _buildDraggableSheet(GeoPoint userLoc) {
     return DraggableScrollableSheet(
-      initialChildSize: 0.35,
+      initialChildSize: 0.55,
       minChildSize: 0.15,
       maxChildSize: 0.9,
       builder: (context, scrollController) {
@@ -159,36 +167,61 @@ class _CustomerHomeMapScreenState extends State<CustomerHomeMapScreen> {
                 return const Center(child: CircularProgressIndicator());
               }
 
-              final allBarbers = snapshot.data ?? [];
-              
-              // Use Smart Agent to find best nearby barbers
-              var nearbyBarbers = _agent.findBestBarbers(
-                allBarbers: allBarbers,
-                userLocation: userLoc,
-              );
-
-              // Apply filter
-              if (_selectedFilter == 1) {
-                nearbyBarbers = nearbyBarbers.where((b) => b.isBookable).toList();
+              // Firestore error (missing index, permission, offline) — show a
+              // friendly fallback inside the sheet instead of an empty list.
+              if (snapshot.hasError) {
+                return ListView(
+                  controller: scrollController,
+                  padding: const EdgeInsets.all(16),
+                  children: [
+                    _buildSheetHeader(0, 0),
+                    QueryErrorView(
+                      error: snapshot.error,
+                      title: 'Couldn\'t load barber shops',
+                      onRetry: () => setState(() {}),
+                    ),
+                  ],
+                );
               }
+
+              final allBarbers = snapshot.data ?? [];
+
+              // Open Now uses the same bookable set as the chip count.
+              // Distance sorts the cards; it does not hide a barber the chip
+              // already counted (the 15 km agent filter was dropping them).
+              final visibleBarbers = allBarbers.where((b) {
+                if (_selectedFilter == 1) return b.isBookable;
+                return true;
+              }).toList()
+                ..sort((a, b) {
+                  final da = GeoUtils.calculateDistance(
+                      userLoc, GeoPoint(a.latitude, a.longitude));
+                  final db = GeoUtils.calculateDistance(
+                      userLoc, GeoPoint(b.latitude, b.longitude));
+                  return da.compareTo(db);
+                });
+
+              // +2 for header and filter; +1 extra row for the empty state so
+              // it is actually rendered when there are no barbers.
+              final itemCount = visibleBarbers.isEmpty ? 3 : visibleBarbers.length + 2;
 
               return ListView.builder(
                 controller: scrollController,
                 padding: const EdgeInsets.all(16),
-                itemCount: nearbyBarbers.length + 2, // +2 for header and filter
+                itemCount: itemCount,
                 itemBuilder: (context, index) {
                   if (index == 0) {
-                    return _buildSheetHeader(nearbyBarbers.length, allBarbers.length);
+                    return _buildSheetHeader(visibleBarbers.length, allBarbers.length);
                   }
                   if (index == 1) {
                     return _buildFilterChips(allBarbers);
                   }
                   
-                  if (nearbyBarbers.isEmpty) {
+                  if (visibleBarbers.isEmpty) {
                     return _buildNoBarbersState();
                   }
-                  
-                  final barber = nearbyBarbers[index - 2];
+
+                  final barber = visibleBarbers[index - 2];
                   double dist = GeoUtils.calculateDistance(
                     userLoc, 
                     GeoPoint(barber.latitude, barber.longitude)

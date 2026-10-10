@@ -8,6 +8,7 @@
 /// 
 /// IMPORTANT: Review all flags in this file before production deployment.
 /// ============================================================================
+library;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // BARBER APPROVAL GATING

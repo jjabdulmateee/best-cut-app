@@ -86,20 +86,20 @@ class _BookingConfirmationScreenState extends State<BookingConfirmationScreen> {
               ),
               child: Column(
                 children: [
-                  Row(
+                  const Row(
                     children: [
                       Icon(
                         Icons.verified_user,
-                        color: const Color(0xFF2196F3),
+                        color: Color(0xFF2196F3),
                         size: 20,
                       ),
-                      const SizedBox(width: 8),
+                      SizedBox(width: 8),
                       Text(
                         'Admin Protected Booking',
                         style: TextStyle(
                           fontSize: 14,
                           fontWeight: FontWeight.w600,
-                          color: const Color(0xFF2196F3),
+                          color: Color(0xFF2196F3),
                         ),
                       ),
                     ],
@@ -142,9 +142,9 @@ class _BookingConfirmationScreenState extends State<BookingConfirmationScreen> {
                   children: [
                     Row(
                       children: [
-                        Icon(
+                        const Icon(
                           Icons.gavel,
-                          color: const Color(0xFFFF9800),
+                          color: Color(0xFFFF9800),
                           size: 20,
                         ),
                         const SizedBox(width: 12),
@@ -154,10 +154,10 @@ class _BookingConfirmationScreenState extends State<BookingConfirmationScreen> {
                             children: [
                               Text(
                                 booking.disputeStatusText,
-                                style: TextStyle(
+                                style: const TextStyle(
                                   fontSize: 14,
                                   fontWeight: FontWeight.w600,
-                                  color: const Color(0xFFFF9800),
+                                  color: Color(0xFFFF9800),
                                 ),
                               ),
                               const SizedBox(height: 2),
@@ -281,20 +281,20 @@ class _BookingConfirmationScreenState extends State<BookingConfirmationScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Row(
+                  const Row(
                     children: [
                       Icon(
                         Icons.help_outline,
-                        color: const Color(0xFFFF9800),
+                        color: Color(0xFFFF9800),
                         size: 20,
                       ),
-                      const SizedBox(width: 8),
+                      SizedBox(width: 8),
                       Text(
                         'Need Help?',
                         style: TextStyle(
                           fontSize: 14,
                           fontWeight: FontWeight.w600,
-                          color: const Color(0xFFFF9800),
+                          color: Color(0xFFFF9800),
                         ),
                       ),
                     ],
@@ -928,18 +928,18 @@ class _BookingConfirmationScreenState extends State<BookingConfirmationScreen> {
                 color: const Color(0xFFFFF3E0),
                 child: Row(
                   children: [
-                    Icon(
+                    const Icon(
                       Icons.lock_outline,
-                      color: const Color(0xFFFF9800),
+                      color: Color(0xFFFF9800),
                       size: 20,
                     ),
                     const SizedBox(width: 12),
                     Expanded(
                       child: Text(
                         _userDataProvider.getBookingLockReason(booking.id) ?? 'Booking actions are currently disabled',
-                        style: TextStyle(
+                        style: const TextStyle(
                           fontSize: 14,
-                          color: const Color(0xFFFF9800),
+                          color: Color(0xFFFF9800),
                           fontWeight: FontWeight.w500,
                         ),
                       ),

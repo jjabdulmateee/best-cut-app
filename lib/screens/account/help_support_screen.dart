@@ -83,7 +83,7 @@ class HelpSupportScreen extends StatelessWidget {
                   },
                 ),
                 const SizedBox(height: 12),
-                _ContactTile(
+                const _ContactTile(
                   icon: Icons.access_time,
                   title: 'Support Hours',
                   value: 'Mon-Sat, 9 AM - 8 PM',
@@ -100,10 +100,10 @@ class HelpSupportScreen extends StatelessWidget {
               color: Colors.white,
               borderRadius: BorderRadius.circular(16),
             ),
-            child: Column(
+            child: const Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Padding(
+                Padding(
                   padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
                   child: Row(
                     children: [

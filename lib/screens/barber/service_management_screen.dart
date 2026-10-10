@@ -140,6 +140,19 @@ class _ServiceManagementScreenState extends State<ServiceManagementScreen> {
       body: StreamBuilder<List<BarberService>>(
         stream: _svcService.streamServices(_barberId),
         builder: (context, snapshot) {
+          if (snapshot.hasError) {
+            return Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Text(
+                  'Could not load services.\n${snapshot.error}',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.grey[700]),
+                ),
+              ),
+            );
+          }
+
           if (snapshot.connectionState == ConnectionState.waiting && !_seeded) {
             return const Center(
               child: CircularProgressIndicator(color: Color(0xFF1A1A1A)),

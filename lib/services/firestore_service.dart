@@ -1,9 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/barber.dart';
 import '../models/slot.dart';
-import '../models/customer.dart';
 import '../services/auth_service.dart';
-import '../services/map_service.dart' hide GeoPoint; // Use Firestore's GeoPoint
+// Use Firestore's GeoPoint
 
 /// Firestore Service - Handles all Firestore CRUD operations
 class FirestoreService {
@@ -238,7 +237,18 @@ class FirestoreService {
         .where('status', whereIn: ['pending', 'confirmed'])
         .get();
 
-    return snapshot.docs.map((doc) => doc.data()['timeSlot'] as String).toSet();
+    return _extractTimeSlots(snapshot);
+  }
+
+  /// Defensive: skip bookings whose `timeSlot` is missing or not a string
+  /// instead of throwing a cast error for the whole query.
+  static Set<String> _extractTimeSlots(QuerySnapshot<Map<String, dynamic>> snapshot) {
+    final slots = <String>{};
+    for (final doc in snapshot.docs) {
+      final slot = doc.data()['timeSlot'];
+      if (slot is String && slot.isNotEmpty) slots.add(slot);
+    }
+    return slots;
   }
 
   /// Stream booked slots for a barber on a specific date
@@ -254,7 +264,7 @@ class FirestoreService {
         .where('bookingDateTime', isLessThan: Timestamp.fromDate(endOfDay))
         .where('status', whereIn: ['pending', 'confirmed'])
         .snapshots()
-        .map((snapshot) => snapshot.docs.map((doc) => doc.data()['timeSlot'] as String).toSet());
+        .map(_extractTimeSlots);
   }
 
   /// Check if a specific time slot is available

@@ -37,10 +37,10 @@ class AdminOverrideIndicator extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
+          const Icon(
             Icons.admin_panel_settings,
             size: 14,
-            color: const Color(0xFF2196F3),
+            color: Color(0xFF2196F3),
           ),
           const SizedBox(width: 4),
           Text(
@@ -94,19 +94,19 @@ class AdminOverrideBanner extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
         color: const Color(0xFF2196F3).withOpacity(0.1),
-        border: Border(
+        border: const Border(
           left: BorderSide(
-            color: const Color(0xFF2196F3),
+            color: Color(0xFF2196F3),
             width: 3,
           ),
         ),
       ),
       child: Row(
         children: [
-          Icon(
+          const Icon(
             Icons.info_outline,
             size: 16,
-            color: const Color(0xFF2196F3),
+            color: Color(0xFF2196F3),
           ),
           const SizedBox(width: 8),
           Expanded(
@@ -157,8 +157,8 @@ class AdminOverrideStatusIcon extends StatelessWidget {
 
     return Container(
       padding: const EdgeInsets.all(2),
-      decoration: BoxDecoration(
-        color: const Color(0xFF2196F3),
+      decoration: const BoxDecoration(
+        color: Color(0xFF2196F3),
         shape: BoxShape.circle,
       ),
       child: const Icon(
@@ -198,10 +198,10 @@ class AdminProtectionShield extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
+          const Icon(
             Icons.shield,
             size: 16,
-            color: const Color(0xFF4CAF50),
+            color: Color(0xFF4CAF50),
           ),
           const SizedBox(width: 6),
           Text(
@@ -361,20 +361,20 @@ class AdminDisputeGuidance extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
+          const Row(
             children: [
               Icon(
                 Icons.help_outline,
                 size: 20,
-                color: const Color(0xFFFF9800),
+                color: Color(0xFFFF9800),
               ),
-              const SizedBox(width: 8),
+              SizedBox(width: 8),
               Text(
                 'Need Help?',
                 style: TextStyle(
                   fontSize: 16,
                   fontWeight: FontWeight.w600,
-                  color: const Color(0xFFFF9800),
+                  color: Color(0xFFFF9800),
                 ),
               ),
             ],
@@ -476,13 +476,13 @@ class SystemFreezeAlert extends StatelessWidget {
       ),
       child: Column(
         children: [
-          Icon(
+          const Icon(
             Icons.warning_amber_rounded,
             size: 48,
             color: Colors.white,
           ),
           const SizedBox(height: 16),
-          Text(
+          const Text(
             'System Maintenance',
             style: TextStyle(
               fontSize: 20,
@@ -821,7 +821,7 @@ class AdminTrustBadge extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
+          const Icon(
             Icons.verified,
             size: 14,
             color: Colors.white,

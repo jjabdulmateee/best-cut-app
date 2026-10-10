@@ -376,20 +376,20 @@ class AdminTrustSignalsBanner extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
+          const Row(
             children: [
               Icon(
                 Icons.verified_user,
-                color: const Color(0xFF2196F3),
+                color: Color(0xFF2196F3),
                 size: 24,
               ),
-              const SizedBox(width: 8),
+              SizedBox(width: 8),
               Text(
                 'Admin Protected',
                 style: TextStyle(
                   fontSize: 16,
                   fontWeight: FontWeight.w600,
-                  color: const Color(0xFF2196F3),
+                  color: Color(0xFF2196F3),
                 ),
               ),
             ],
@@ -404,18 +404,18 @@ class AdminTrustSignalsBanner extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 12),
-          Row(
+          const Row(
             children: [
               _TrustSignal(
                 icon: Icons.security,
                 text: 'Secure Payments',
               ),
-              const SizedBox(width: 16),
+              SizedBox(width: 16),
               _TrustSignal(
                 icon: Icons.support_agent,
                 text: '24/7 Support',
               ),
-              const SizedBox(width: 16),
+              SizedBox(width: 16),
               _TrustSignal(
                 icon: Icons.verified,
                 text: 'Verified Barbers',

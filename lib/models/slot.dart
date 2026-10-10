@@ -501,7 +501,7 @@ class Booking {
     }
 
     // Defensive helper: safely convert to int (handles int, double, String)
-    int? _safeInt(dynamic value) {
+    int? safeInt(dynamic value) {
       if (value == null) return null;
       if (value is int) return value;
       if (value is double) return value.toInt();
@@ -517,7 +517,7 @@ class Booking {
       barberAddress: map['barberAddress']?.toString(),
       bookingDateTime: bookingDateTime,
       timeSlot: (map['timeSlot'] ?? '').toString(),
-      pricePKR: _safeInt(map['pricePKR']) ?? 0,
+      pricePKR: safeInt(map['pricePKR']) ?? 0,
       status: status,
       createdAt: createdAt,
       acceptedAt: acceptedAt,
@@ -526,12 +526,12 @@ class Booking {
       paymentMethod: paymentMethod,
       cancellationReason: map['cancellationReason']?.toString(),
       cancelledBy: map['cancelledBy']?.toString(),
-      rating: _safeInt(map['rating']),
+      rating: safeInt(map['rating']),
       customerId: map['customerId']?.toString(),
       customerName: map['customerName']?.toString(),
       customerImageUrl: map['customerImageUrl']?.toString(),
       customerRatingScore: (map['customerRatingScore'] as num?)?.toDouble(),
-      customerRating: _safeInt(map['customerRating']),
+      customerRating: safeInt(map['customerRating']),
       customerRatingComment: map['customerRatingComment']?.toString(),
       isBookingForOther: map['isBookingForOther'] as bool? ?? false,
       bookedForName: map['bookedForName']?.toString(),
@@ -552,22 +552,22 @@ class Booking {
           : null,
       // Booking engine fields
       serviceIds: List<String>.from(map['serviceIds'] ?? []),
-      rescheduleCount: _safeInt(map['rescheduleCount']) ?? 0,
+      rescheduleCount: safeInt(map['rescheduleCount']) ?? 0,
       barberSwitched: map['barberSwitched'] as bool? ?? false,
       originalBarberId: map['originalBarberId']?.toString(),
-      originalPrice: _safeInt(map['originalPrice']),
-      refundAmount: _safeInt(map['refundAmount']),
+      originalPrice: safeInt(map['originalPrice']),
+      refundAmount: safeInt(map['refundAmount']),
       // Phase 3 fields
       serviceMode: (map['serviceMode'] ?? 'shop').toString(),
       rejectedAt: rejectedAt,
       completedAt: completedAt,
-      barberEarnings: _safeInt(map['barberEarnings']),
-      platformFee: _safeInt(map['platformFee']),
+      barberEarnings: safeInt(map['barberEarnings']),
+      platformFee: safeInt(map['platformFee']),
       // Phase 4 rerouting fields
       assignedAt: assignedAt,
       assignmentExpiresAt: assignmentExpiresAt,
       assignmentExpired: map['assignmentExpired'] as bool? ?? false,
-      rerouteCount: _safeInt(map['rerouteCount']) ?? 0,
+      rerouteCount: safeInt(map['rerouteCount']) ?? 0,
       lastAssignmentBarberId: map['lastAssignmentBarberId']?.toString(),
     );
   }
@@ -739,6 +739,7 @@ enum BookingStatus {
   // requested → accepted → inProgress → completed
   // rejected / cancelled handled separately
   pending,              // Customer created booking (= "Requested")
+  rerouting,            // Barber didn't respond in time — finding another barber
   confirmed,            // Barber accepted (= "Accepted")
   inProgress,           // Barber started the job
   completed,            // Job finished
@@ -752,6 +753,8 @@ extension BookingStatusExtension on BookingStatus {
     switch (this) {
       case BookingStatus.pending:
         return 'Requested';
+      case BookingStatus.rerouting:
+        return 'Finding Barber';
       case BookingStatus.confirmed:
         return 'Accepted';
       case BookingStatus.inProgress:
@@ -771,6 +774,8 @@ extension BookingStatusExtension on BookingStatus {
     switch (this) {
       case BookingStatus.pending:
         return 'Waiting for barber to accept';
+      case BookingStatus.rerouting:
+        return 'Barber didn\'t respond — routing to the next nearest barber';
       case BookingStatus.confirmed:
         return 'Barber accepted — awaiting appointment';
       case BookingStatus.inProgress:
@@ -793,6 +798,7 @@ extension BookingStatusExtension on BookingStatus {
   /// Whether this status represents an active/live booking
   bool get isActive =>
       this == BookingStatus.pending ||
+      this == BookingStatus.rerouting ||
       this == BookingStatus.confirmed ||
       this == BookingStatus.inProgress;
 
@@ -807,6 +813,8 @@ extension BookingStatusExtension on BookingStatus {
     switch (this) {
       case BookingStatus.pending:
         return const Color(0xFFFF9800); // Orange
+      case BookingStatus.rerouting:
+        return const Color(0xFF9C27B0); // Purple
       case BookingStatus.confirmed:
         return const Color(0xFF2196F3); // Blue
       case BookingStatus.inProgress:
@@ -826,6 +834,8 @@ extension BookingStatusExtension on BookingStatus {
     switch (this) {
       case BookingStatus.pending:
         return Icons.schedule;
+      case BookingStatus.rerouting:
+        return Icons.alt_route;
       case BookingStatus.confirmed:
         return Icons.check_circle;
       case BookingStatus.inProgress:
@@ -841,6 +851,26 @@ extension BookingStatusExtension on BookingStatus {
   }
 }
 
+/// Null-safe "HH:mm" time-slot parser.
+///
+/// Returns `null` for anything malformed (null, empty, non-numeric, out of
+/// range) instead of throwing, so bad slot data from Firestore can never take
+/// down a view. `"9:30"`, `"09:30"` and `"09"` are all accepted.
+({int hour, int minute})? parseTimeSlot(String? slot) {
+  if (slot == null) return null;
+  final value = slot.trim();
+  if (value.isEmpty) return null;
+
+  final parts = value.split(':');
+  final hour = int.tryParse(parts[0].trim());
+  if (hour == null || hour < 0 || hour > 23) return null;
+
+  final minute = parts.length > 1 ? int.tryParse(parts[1].trim()) : 0;
+  if (minute == null || minute < 0 || minute > 59) return null;
+
+  return (hour: hour, minute: minute);
+}
+
 /// Parse BookingStatus from Firestore string with backward compatibility.
 /// Handles both old names (pending/confirmed) and Phase 3 names (requested/accepted/in_progress).
 BookingStatus parseBookingStatus(String? statusStr) {
@@ -848,6 +878,8 @@ BookingStatus parseBookingStatus(String? statusStr) {
     case 'pending':
     case 'requested':
       return BookingStatus.pending;
+    case 'rerouting':
+      return BookingStatus.rerouting;
     case 'confirmed':
     case 'accepted':
       return BookingStatus.confirmed;

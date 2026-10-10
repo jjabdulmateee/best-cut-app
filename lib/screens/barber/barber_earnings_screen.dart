@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import '../../data/user_data_provider.dart';
 import '../../data/app_data.dart' show BarberTransaction, BarberTransactionType, BarberTransactionTypeExtension;
+import '../transaction_history_screen.dart';
+import '../../widgets/v2_notice.dart';
 
 class BarberEarningsScreen extends StatefulWidget {
   const BarberEarningsScreen({super.key});
@@ -94,7 +96,7 @@ class _BarberEarningsScreenState extends State<BarberEarningsScreen> {
               borderRadius: BorderRadius.circular(12),
             ),
             child: IconButton(
-              onPressed: () {},
+              onPressed: () => showV2Notice(context, 'Earnings help'),
               icon: const Icon(Icons.help_outline, color: Color(0xFF1A1A1A)),
             ),
           ),
@@ -206,7 +208,14 @@ class _BarberEarningsScreenState extends State<BarberEarningsScreen> {
               const SizedBox(width: 12),
               Expanded(
                 child: OutlinedButton.icon(
-                  onPressed: () {},
+                  onPressed: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const TransactionHistoryScreen(),
+                      ),
+                    );
+                  },
                   icon: const Icon(Icons.history, size: 18),
                   label: const Text('History'),
                   style: OutlinedButton.styleFrom(
@@ -402,7 +411,12 @@ class _BarberEarningsScreenState extends State<BarberEarningsScreen> {
                 ),
               ),
               TextButton(
-                onPressed: () {},
+                onPressed: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const TransactionHistoryScreen(),
+                  ),
+                ),
                 child: const Text(
                   'See All',
                   style: TextStyle(
@@ -535,7 +549,6 @@ class _BarberEarningsScreenState extends State<BarberEarningsScreen> {
   void _showWithdrawDialog() {
     final amountController = TextEditingController();
     String? selectedMethod;
-    bool isProcessing = false;
 
     showModalBottomSheet(
       context: context,
@@ -661,67 +674,34 @@ class _BarberEarningsScreenState extends State<BarberEarningsScreen> {
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton(
-                    onPressed: isProcessing ? null : () async {
-                      final amount = int.tryParse(amountController.text) ?? 0;
-                      if (amount <= 0) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Please enter a valid amount'),
-                            backgroundColor: Colors.red,
-                          ),
-                        );
-                        return;
-                      }
+                    onPressed: () {
                       if (selectedMethod == null) {
                         ScaffoldMessenger.of(context).showSnackBar(
                           const SnackBar(
-                            content: Text('Please select a withdrawal method'),
+                            content: Text('Please select JazzCash, Easypaisa, or Bank Transfer'),
                             backgroundColor: Colors.red,
                           ),
                         );
                         return;
                       }
-                      if (amount > _userDataProvider.barberWalletBalance) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Insufficient balance'),
-                            backgroundColor: Colors.red,
+                      showDialog<void>(
+                        context: context,
+                        builder: (dialogContext) => AlertDialog(
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
                           ),
-                        );
-                        return;
-                      }
-
-                      setModalState(() => isProcessing = true);
-                      
-                      final success = await _userDataProvider.withdrawBarberFunds(
-                        amount,
-                        'Withdrawal to ${selectedMethod ?? 'Unknown'}',
-                        selectedMethod ?? 'Unknown',
-                      );
-                      
-                      Navigator.pop(context);
-                      
-                      if (success) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Row(
-                              children: [
-                                const Icon(Icons.check_circle, color: Colors.white),
-                                const SizedBox(width: 12),
-                                Text('PKR $amount withdrawn successfully!'),
-                              ],
+                          title: const Text('Payment Gateway V2'),
+                          content: const Text(
+                            'Payment Gateway V2: Live withdrawals will be enabled in the next release. Your balance is tracked in your wallet.',
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(dialogContext),
+                              child: const Text('OK'),
                             ),
-                            backgroundColor: const Color(0xFF4CAF50),
-                          ),
-                        );
-                      } else {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('Withdrawal failed. Please try again.'),
-                            backgroundColor: Colors.red,
-                          ),
-                        );
-                      }
+                          ],
+                        ),
+                      );
                     },
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFF1A1A1A),
@@ -731,16 +711,7 @@ class _BarberEarningsScreenState extends State<BarberEarningsScreen> {
                         borderRadius: BorderRadius.circular(12),
                       ),
                     ),
-                    child: isProcessing
-                        ? const SizedBox(
-                            height: 20,
-                            width: 20,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: Colors.white,
-                            ),
-                          )
-                        : const Text(
+                    child: const Text(
                             'Withdraw',
                             style: TextStyle(
                               fontSize: 16,

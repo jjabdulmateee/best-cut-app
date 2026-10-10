@@ -314,7 +314,9 @@ class _BarberApplicationStatusScreenState
     // Only auto-submit from draft / pending / needMoreDocs
     if (_currentStatus != BarberStatus.draft &&
         _currentStatus != BarberStatus.pending &&
-        _currentStatus != BarberStatus.needMoreDocs) return;
+        _currentStatus != BarberStatus.needMoreDocs) {
+      return;
+    }
 
     final user = _authService.currentUser;
     if (user == null) return;
@@ -674,7 +676,7 @@ class _BarberApplicationStatusScreenState
                 fontWeight: FontWeight.w600,
                 color: Color(0xFF1A1A1A))),
         const SizedBox(height: 20),
-        _TimelineStep(
+        const _TimelineStep(
           title: 'Account Created',
           subtitle: 'Your barber account is set up',
           state: _TimelineStepState.completed,
@@ -1073,12 +1075,12 @@ class _BarberApplicationStatusScreenState
         Text('مدد چاہیے؟',
             style: TextStyle(fontSize: 13, color: Colors.grey[500])),
         const SizedBox(height: 12),
-        _HelpRow(
+        const _HelpRow(
             icon: Icons.email_outlined,
             label: 'support@bestcut.pk',
             sublabel: 'Email us anytime / کسی بھی وقت ای میل کریں'),
         const SizedBox(height: 10),
-        _HelpRow(
+        const _HelpRow(
             icon: Icons.schedule_outlined,
             label: 'Response time',
             sublabel: 'Usually within 24 hours / عام طور پر 24 گھنٹوں میں'),

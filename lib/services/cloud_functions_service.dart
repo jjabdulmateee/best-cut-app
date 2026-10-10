@@ -1,6 +1,5 @@
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import '../models/slot.dart';
 import '../data/app_data.dart';
 import 'error_message_service.dart';
 

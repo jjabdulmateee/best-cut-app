@@ -2,6 +2,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../models/slot.dart';
 import '../models/barber.dart';
+// Prefixed: map_service defines its own GeoPoint which clashes with Firestore's.
+import 'map_service.dart' as geo;
 
 // ============================================================================
 // BOOKING ENGINE SERVICE — Phase 1 + Phase 3
@@ -71,6 +73,12 @@ class BookingEngineResult {
       BookingEngineResult(success: false, message: message);
 }
 
+/// Thrown inside the cancel transaction to abort with a user-facing message.
+class _CancelAbort implements Exception {
+  final String message;
+  const _CancelAbort(this.message);
+}
+
 class BookingEngineService {
   static final BookingEngineService _instance = BookingEngineService._internal();
   factory BookingEngineService() => _instance;
@@ -95,7 +103,9 @@ class BookingEngineService {
 
   // Phase 4: Rerouting limits
   static const int maxReroutes = 3;
-  static const int assignmentTimeoutMinutes = 30;
+  /// A barber has this long to accept a pending request before it is
+  /// automatically rerouted to the next nearest active barber.
+  static const int assignmentTimeoutMinutes = 15;
 
   // ─────────────────────── Streams ───────────────────────
 
@@ -248,6 +258,19 @@ class BookingEngineService {
     final hoursUntil =
         booking.bookingDateTime.difference(now).inMinutes / 60.0;
 
+    // Stuck looking for a barber is never the customer's fault → full refund.
+    if (booking.status == BookingStatus.rerouting) {
+      return CancellationPolicy(
+        allowed: true,
+        refundPercent: 100,
+        refundAmount: booking.pricePKR,
+        barberAmount: 0,
+        platformAmount: 0,
+        message: 'Full refund of PKR ${booking.pricePKR} will be credited.',
+        tier: 'full',
+      );
+    }
+
     // Already past or not cancellable status
     if (booking.status != BookingStatus.confirmed &&
         booking.status != BookingStatus.pending) {
@@ -264,7 +287,7 @@ class BookingEngineService {
 
     if (hoursUntil <= partialRefundHours) {
       // ≤2 hours: BLOCKED
-      return CancellationPolicy(
+      return const CancellationPolicy(
         allowed: false,
         refundPercent: 0,
         refundAmount: 0,
@@ -313,23 +336,43 @@ class BookingEngineService {
     String? reason,
   }) async {
     try {
-      final booking = await getBooking(bookingId);
-      if (booking == null) {
-        return BookingEngineResult.fail('Booking not found.');
-      }
+      final user = _auth.currentUser;
+      if (user == null) return BookingEngineResult.fail('Not authenticated.');
 
-      final policy = getCancellationPolicy(booking);
-      if (!policy.allowed) {
-        return BookingEngineResult.fail(policy.message);
-      }
+      final bookingRef = _firestore.collection('bookings').doc(bookingId);
 
-      // Update booking in Firestore
-      await _firestore.collection('bookings').doc(bookingId).update({
-        'status': BookingStatus.cancelledByCustomer.name,
-        'cancellationReason': reason ?? 'Cancelled by customer',
-        'cancelledBy': 'customer',
-        'refundAmount': policy.refundAmount,
-        'updatedAt': FieldValue.serverTimestamp(),
+      // Transaction: status change and wallet refund commit together, and the
+      // status re-check inside it prevents a double refund on repeated taps.
+      final policy = await _firestore.runTransaction<CancellationPolicy>((tx) async {
+        final snap = await tx.get(bookingRef);
+        if (!snap.exists) {
+          throw const _CancelAbort('Booking not found.');
+        }
+        final data = snap.data()!;
+        data['id'] = snap.id;
+        final booking = Booking.fromMap(data);
+
+        if (booking.customerId != user.uid) {
+          throw const _CancelAbort('Only the booking customer can cancel.');
+        }
+
+        final policy = getCancellationPolicy(booking);
+        if (!policy.allowed) throw _CancelAbort(policy.message);
+
+        tx.update(bookingRef, {
+          'status': BookingStatus.cancelledByCustomer.name,
+          'cancellationReason': reason ?? 'Cancelled by customer',
+          'cancelledBy': 'customer',
+          'refundAmount': policy.refundAmount,
+          'updatedAt': FieldValue.serverTimestamp(),
+        });
+
+        if (policy.refundAmount > 0) {
+          tx.update(_firestore.collection('users').doc(booking.customerId), {
+            'walletBalance': FieldValue.increment(policy.refundAmount),
+          });
+        }
+        return policy;
       });
 
       print('✅ BookingEngine: Booking $bookingId cancelled '
@@ -341,6 +384,8 @@ class BookingEngineService {
             : 'Booking cancelled. PKR ${policy.refundAmount} (80%) refunded. '
                 'PKR ${policy.barberAmount} to barber, PKR ${policy.platformAmount} platform fee.',
       );
+    } on _CancelAbort catch (e) {
+      return BookingEngineResult.fail(e.message);
     } catch (e) {
       print('❌ BookingEngine.cancelBooking: $e');
       return BookingEngineResult.fail('Cancellation failed: $e');
@@ -573,11 +618,53 @@ class BookingEngineService {
     }
   }
 
-  /// Barber REJECTS a booking request.
-  /// Transition: pending → rejected (triggers full refund)
+  /// Barber DECLINES a booking request.
+  /// Transition: pending → rerouting → pending (next nearest barber).
+  /// The booking stays alive; the declining barber is added to
+  /// `rejectedByBarbers` so they are never offered it again.
   Future<BookingEngineResult> rejectBooking(
     String bookingId, {
     String reason = 'Barber unavailable',
+  }) {
+    return _barberHandOff(
+      bookingId,
+      allowedFrom: BookingStatus.pending,
+      reason: reason,
+      extra: {'rejectedAt': FieldValue.serverTimestamp()},
+      action: 'decline',
+    );
+  }
+
+  /// Barber EMERGENCY-CANCELS a booking they already accepted.
+  /// Transition: confirmed → rerouting → pending (next nearest barber).
+  Future<BookingEngineResult> cancelAcceptedBooking(
+    String bookingId,
+    String reason,
+  ) {
+    final trimmed = reason.trim();
+    if (trimmed.isEmpty) {
+      return Future.value(
+          BookingEngineResult.fail('Please give a reason for cancelling.'));
+    }
+    return _barberHandOff(
+      bookingId,
+      allowedFrom: BookingStatus.confirmed,
+      reason: trimmed,
+      extra: {'barberCancelledAt': FieldValue.serverTimestamp()},
+      action: 'cancel',
+    );
+  }
+
+  /// Shared barber-side reroute: flag 'rerouting', put this barber on the
+  /// ignore list, then hand the booking to the next nearest active barber.
+  /// If none is available it stays 'rerouting' and the customer's app keeps
+  /// retrying via [autoRerouteIfExpired].
+  Future<BookingEngineResult> _barberHandOff(
+    String bookingId, {
+    required BookingStatus allowedFrom,
+    required String reason,
+    required Map<String, dynamic> extra,
+    required String action,
   }) async {
     try {
       final user = _auth.currentUser;
@@ -587,31 +674,42 @@ class BookingEngineService {
       if (booking == null) return BookingEngineResult.fail('Booking not found.');
 
       if (booking.barberId != user.uid) {
-        return BookingEngineResult.fail('Only the assigned barber can reject this booking.');
-      }
-
-      if (booking.status != BookingStatus.pending) {
         return BookingEngineResult.fail(
-            'Cannot reject — booking is ${booking.status.displayName}.');
+            'Only the assigned barber can $action this booking.');
+      }
+      if (booking.status != allowedFrom) {
+        return BookingEngineResult.fail(
+            'Cannot $action — booking is ${booking.status.displayName}.');
       }
 
-      // Reject with full refund
       await _firestore.collection('bookings').doc(bookingId).update({
-        'status': BookingStatus.rejected.name,
+        'status': BookingStatus.rerouting.name,
         'cancellationReason': reason,
         'cancelledBy': 'barber',
-        'refundAmount': booking.pricePKR, // Full refund on rejection
-        'rejectedAt': FieldValue.serverTimestamp(),
+        'rejectedByBarbers': FieldValue.arrayUnion([user.uid]),
         'updatedAt': FieldValue.serverTimestamp(),
+        ...extra,
       });
+      print('↪️ BookingEngine: Booking $bookingId ${action}d by ${user.uid} — rerouting');
 
-      print('✅ BookingEngine: Booking $bookingId rejected (full refund: ${booking.pricePKR})');
+      final fresh = await getBooking(bookingId);
+      if (fresh == null || fresh.rerouteCount >= maxReroutes) {
+        return BookingEngineResult.ok(
+            'Booking released. The customer will be offered a full refund.');
+      }
+
+      final next = await findNextNearestActiveBarber(fresh);
+      if (next == null) {
+        return BookingEngineResult.ok(
+            'Booking released. We\'ll keep looking for another barber.');
+      }
+
+      await _assignBookingToBarber(fresh, next);
       return BookingEngineResult.ok(
-        'Booking rejected. Full refund of PKR ${booking.pricePKR} will be issued.',
-      );
+          'Booking released and sent to the next nearest barber.');
     } catch (e) {
-      print('❌ BookingEngine.rejectBooking: $e');
-      return BookingEngineResult.fail('Failed to reject booking: $e');
+      print('❌ BookingEngine._barberHandOff($action): $e');
+      return BookingEngineResult.fail('Failed to $action booking: $e');
     }
   }
 
@@ -745,15 +843,16 @@ class BookingEngineService {
         return BookingEngineResult.fail('Only the booking customer can reroute.');
       }
 
-      // Must be pending + expired
-      if (booking.status != BookingStatus.pending) {
+      // Must be pending+expired, or already in the rerouting state
+      final isPendingExpired = booking.status == BookingStatus.pending &&
+          isAssignmentExpired(booking);
+      if (!isPendingExpired && booking.status != BookingStatus.rerouting) {
+        if (booking.status == BookingStatus.pending) {
+          return BookingEngineResult.fail(
+              'Cannot reroute — the current barber still has time to respond.');
+        }
         return BookingEngineResult.fail(
             'Cannot reroute — booking is ${booking.status.displayName}.');
-      }
-
-      if (!booking.assignmentExpired) {
-        return BookingEngineResult.fail(
-            'Cannot reroute — the current barber still has time to respond.');
       }
 
       // Max 3 reroutes
@@ -768,32 +867,7 @@ class BookingEngineService {
         return BookingEngineResult.fail('Cannot reroute to the same barber.');
       }
 
-      // Calculate new expiry
-      final expiresAt = DateTime.now().add(
-        const Duration(minutes: assignmentTimeoutMinutes),
-      );
-
-      // Update the SAME booking document — one booking, one escrow, one lifecycle
-      await _firestore.collection('bookings').doc(bookingId).update({
-        // New barber
-        'barberId': newBarber.id,
-        'barberName': newBarber.name,
-        'shopName': newBarber.shopName,
-        'barberImageUrl': newBarber.imageUrl,
-        'barberAddress': newBarber.address,
-        // Assignment tracking
-        'assignedAt': FieldValue.serverTimestamp(),
-        'assignmentExpiresAt': Timestamp.fromDate(expiresAt),
-        'assignmentExpired': false,
-        'rerouteCount': booking.rerouteCount + 1,
-        'lastAssignmentBarberId': booking.barberId,
-        // Keep pending — new barber must accept
-        'status': BookingStatus.pending.name,
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
-
-      print('✅ BookingEngine: Booking $bookingId rerouted to ${newBarber.id} '
-          '(count: ${booking.rerouteCount + 1}/$maxReroutes)');
+      await _assignBookingToBarber(booking, newBarber);
 
       return BookingEngineResult.ok(
         'Booking sent to ${newBarber.name}. They have $assignmentTimeoutMinutes minutes to respond.',
@@ -802,6 +876,206 @@ class BookingEngineService {
       print('❌ BookingEngine.rerouteBooking: $e');
       return BookingEngineResult.fail('Rerouting failed: $e');
     }
+  }
+
+  /// Reassign [booking] to [newBarber] on the SAME document — one booking,
+  /// one escrow, one lifecycle. Resets the 15-minute acceptance window and
+  /// puts the booking back to 'pending' so the new barber must accept.
+  Future<void> _assignBookingToBarber(Booking booking, Barber newBarber) async {
+    final expiresAt = DateTime.now().add(
+      const Duration(minutes: assignmentTimeoutMinutes),
+    );
+
+    await _firestore.collection('bookings').doc(booking.id).update({
+      // New barber
+      'barberId': newBarber.id,
+      'barberName': newBarber.name,
+      'shopName': newBarber.shopName,
+      'barberImageUrl': newBarber.imageUrl,
+      'barberAddress': newBarber.address,
+      // Assignment tracking
+      'assignedAt': FieldValue.serverTimestamp(),
+      'assignmentExpiresAt': Timestamp.fromDate(expiresAt),
+      'assignmentExpired': false,
+      'rerouteCount': booking.rerouteCount + 1,
+      'lastAssignmentBarberId': booking.barberId,
+      // Back to pending — new barber must accept
+      'status': BookingStatus.pending.name,
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+
+    print('✅ BookingEngine: Booking ${booking.id} rerouted to ${newBarber.id} '
+        '(count: ${booking.rerouteCount + 1}/$maxReroutes)');
+  }
+
+  // ─────────────────────── 15-minute auto-reroute ───────────────────────
+
+  /// Whether the current barber's acceptance window has elapsed.
+  ///
+  /// Uses the server flag when set, otherwise compares `assignmentExpiresAt`
+  /// (falling back to `assignedAt`/`createdAt` + timeout) against the clock,
+  /// so the client can react even if the scheduled Cloud Function isn't running.
+  bool isAssignmentExpired(Booking booking) {
+    if (booking.assignmentExpired) return true;
+    final now = DateTime.now();
+    final expiresAt = booking.assignmentExpiresAt ??
+        (booking.assignedAt ?? booking.createdAt)
+            .add(const Duration(minutes: assignmentTimeoutMinutes));
+    return now.isAfter(expiresAt);
+  }
+
+  /// True when [booking] should be picked up by [autoRerouteIfExpired].
+  bool needsAutoReroute(Booking booking) {
+    if (booking.status == BookingStatus.rerouting) return true;
+    return booking.status == BookingStatus.pending && isAssignmentExpired(booking);
+  }
+
+  /// Bookings currently being auto-rerouted (prevents duplicate runs when
+  /// several screens observe the same booking at once).
+  final Set<String> _autoRerouteInFlight = <String>{};
+
+  /// 15-MINUTE TIMEOUT: if [booking] has sat in 'pending' past the acceptance
+  /// window, mark it 'rerouting' and hand it to the next nearest active barber.
+  ///
+  /// Flow:
+  ///   1. status → 'rerouting' (so the UI shows "Finding another barber")
+  ///   2. look up eligible barbers (approved, matching service mode, not the
+  ///      current or previous barber), keep only ones that are online & open
+  ///   3. sort by distance from the previous barber's shop (nearest first),
+  ///      falling back to rating when coordinates are unavailable
+  ///   4. reassign via [_assignBookingToBarber] → status back to 'pending'
+  ///
+  /// If no barber is available the booking stays in 'rerouting' and the next
+  /// observer retries. After [maxReroutes] the customer is told to cancel.
+  /// Only the booking's customer may trigger this (Firestore rules enforce it).
+  Future<BookingEngineResult> autoRerouteIfExpired(Booking booking) async {
+    if (!needsAutoReroute(booking)) {
+      return BookingEngineResult.fail('Booking does not need rerouting.');
+    }
+    final user = _auth.currentUser;
+    if (user == null || user.uid != booking.customerId) {
+      return BookingEngineResult.fail('Only the booking customer can reroute.');
+    }
+    if (!_autoRerouteInFlight.add(booking.id)) {
+      return BookingEngineResult.fail('Reroute already in progress.');
+    }
+
+    try {
+      // Re-read to avoid acting on a stale snapshot (barber may have just accepted).
+      final fresh = await getBooking(booking.id) ?? booking;
+      if (!needsAutoReroute(fresh)) {
+        return BookingEngineResult.fail('Booking no longer needs rerouting.');
+      }
+
+      if (fresh.rerouteCount >= maxReroutes) {
+        if (fresh.status != BookingStatus.rerouting) {
+          await _setRerouting(fresh);
+        }
+        return BookingEngineResult.fail(
+            'No barber accepted after $maxReroutes attempts. '
+            'You can cancel for a full refund.');
+      }
+
+      // Step 1: flag as rerouting
+      if (fresh.status != BookingStatus.rerouting) {
+        print('⏰ BookingEngine: Booking ${fresh.id} pending > '
+            '$assignmentTimeoutMinutes min — marking rerouting');
+        await _setRerouting(fresh);
+      }
+
+      // Step 2: secondary barber lookup
+      final nextBarber = await findNextNearestActiveBarber(fresh);
+      if (nextBarber == null) {
+        print('ℹ️ BookingEngine: No active barber available for ${fresh.id} yet');
+        return BookingEngineResult.fail(
+            'No other barber is available right now. We\'ll keep looking.');
+      }
+
+      // Step 3/4: reassign
+      await _assignBookingToBarber(fresh, nextBarber);
+      return BookingEngineResult.ok(
+        'Request sent to ${nextBarber.name}. They have '
+        '$assignmentTimeoutMinutes minutes to respond.',
+        bookingId: fresh.id,
+      );
+    } catch (e) {
+      print('❌ BookingEngine.autoRerouteIfExpired: $e');
+      return BookingEngineResult.fail('Automatic rerouting failed: $e');
+    } finally {
+      _autoRerouteInFlight.remove(booking.id);
+    }
+  }
+
+  /// Flag [booking] as 'rerouting' and put the barber who let it time out on
+  /// the ignore list so the lookup never offers it to them again.
+  Future<void> _setRerouting(Booking booking) {
+    return _firestore.collection('bookings').doc(booking.id).update({
+      'status': BookingStatus.rerouting.name,
+      'assignmentExpired': true,
+      'rejectedByBarbers': FieldValue.arrayUnion([booking.barberId]),
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  /// Secondary barber lookup: the next nearest barber who is approved, online,
+  /// within working hours, offers the booking's service mode, and hasn't
+  /// already held this booking.
+  Future<Barber?> findNextNearestActiveBarber(Booking booking) async {
+    final candidates = await getEligibleBarbersForReroute(
+      currentBarberId: booking.barberId,
+      serviceMode: booking.serviceMode,
+    );
+
+    // Barbers who declined, cancelled, or let this booking time out.
+    final ignored = <String>{};
+    try {
+      final snap =
+          await _firestore.collection('bookings').doc(booking.id).get();
+      final raw = snap.data()?['rejectedByBarbers'];
+      if (raw is List) ignored.addAll(raw.whereType<String>());
+    } catch (_) {
+      // Treat as empty; current/previous barber are still excluded below.
+    }
+
+    final active = candidates.where((b) {
+      if (ignored.contains(b.id)) return false;
+      if (b.id == booking.lastAssignmentBarberId) return false;
+      if (!b.isOnline || !b.isWithinWorkingHours) return false;
+      if (b.latitude == 0.0 && b.longitude == 0.0) return false; // no location yet
+      return true;
+    }).toList();
+    if (active.isEmpty) return null;
+
+    // Measure "nearest" from the previous barber's shop — the closest proxy
+    // we have for where the customer intends to be served.
+    geo.GeoPoint? origin;
+    try {
+      final prevDoc =
+          await _firestore.collection('users').doc(booking.barberId).get();
+      final data = prevDoc.data();
+      final lat = (data?['latitude'] as num?)?.toDouble();
+      final lng = (data?['longitude'] as num?)?.toDouble();
+      if (lat != null && lng != null && !(lat == 0.0 && lng == 0.0)) {
+        origin = geo.GeoPoint(lat, lng);
+      }
+    } catch (_) {
+      // Fall back to rating order below.
+    }
+
+    if (origin != null) {
+      final from = origin;
+      active.sort((a, b) {
+        final da = geo.GeoUtils.calculateDistance(
+            from, geo.GeoPoint(a.latitude, a.longitude));
+        final db = geo.GeoUtils.calculateDistance(
+            from, geo.GeoPoint(b.latitude, b.longitude));
+        final byDistance = da.compareTo(db);
+        return byDistance != 0 ? byDistance : b.rating.compareTo(a.rating);
+      });
+    }
+    // else: getEligibleBarbersForReroute already sorted by rating
+
+    return active.first;
   }
 
   /// Stream a single booking in real-time (for customer tracking)

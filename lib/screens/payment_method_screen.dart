@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../data/app_data.dart';
+import '../widgets/v2_notice.dart';
 
 class PaymentMethodScreen extends StatefulWidget {
   final PaymentMethod? initialSelection;
@@ -317,12 +318,7 @@ class _PaymentMethodScreenState extends State<PaymentMethodScreen> {
   Widget _buildAddNewMethod() {
     return GestureDetector(
       onTap: () {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Add payment method coming soon!'),
-            duration: Duration(seconds: 1),
-          ),
-        );
+        showV2Notice(context, 'Add payment method');
       },
       child: Container(
         padding: const EdgeInsets.all(16),

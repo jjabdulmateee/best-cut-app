@@ -145,6 +145,10 @@ class _BarberBookingsScreenState extends State<BarberBookingsScreen> with Ticker
         color = Colors.orange;
         text = 'Requested';
         break;
+      case BookingStatus.rerouting:
+        color = const Color(0xFF9C27B0);
+        text = 'Rerouting';
+        break;
       case BookingStatus.confirmed:
         color = Colors.blue;
         text = 'Accepted';

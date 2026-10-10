@@ -15,9 +15,9 @@ class MainNavigation extends StatefulWidget {
 class _MainNavigationState extends State<MainNavigation> {
   int _currentIndex = 0;
 
-  final List<Widget> _screens = [
+  late final List<Widget> _screens = [
     const CustomerHomeMapScreen(),
-    const BookingHistoryScreen(),
+    BookingHistoryScreen(onFindBarber: () => setState(() => _currentIndex = 0)),
     const WalletScreen(),
     const ProfileScreen(),
   ];

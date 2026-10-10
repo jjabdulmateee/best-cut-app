@@ -1,4 +1,3 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/slot.dart';
@@ -130,7 +129,7 @@ class AppData extends ChangeNotifier {
   // ==================== BARBER DATA ====================
   
   // Current logged-in barber (simulated - using first barber as default)
-  String _currentBarberId = '1';
+  final String _currentBarberId = '1';
   String get currentBarberId => _currentBarberId;
   
   // Barber Online Status
@@ -194,7 +193,7 @@ class AppData extends ChangeNotifier {
   
   // Customers database (for barber to rate)
   final Map<String, Customer> _customers = {
-    'c1': Customer(
+    'c1': const Customer(
       id: 'c1',
       name: 'Ali Hassan',
       phoneNumber: '0300****123',
@@ -203,7 +202,7 @@ class AppData extends ChangeNotifier {
       totalBookings: 12,
       cancelledBookings: 1,
     ),
-    'c2': Customer(
+    'c2': const Customer(
       id: 'c2',
       name: 'Usman Khan',
       phoneNumber: '0321****456',
@@ -212,7 +211,7 @@ class AppData extends ChangeNotifier {
       totalBookings: 8,
       cancelledBookings: 0,
     ),
-    'c3': Customer(
+    'c3': const Customer(
       id: 'c3',
       name: 'Fahad Ali',
       phoneNumber: '0333****789',
@@ -457,25 +456,25 @@ class AppData extends ChangeNotifier {
 
   // Payment Methods
   final List<PaymentMethodItem> _paymentMethods = [
-    PaymentMethodItem(
+    const PaymentMethodItem(
       method: PaymentMethod.wallet,
       name: 'Best Cut Wallet',
       subtitle: null,
       isDefault: true,
     ),
-    PaymentMethodItem(
+    const PaymentMethodItem(
       method: PaymentMethod.jazzcash,
       name: 'JazzCash',
       subtitle: '0300****567',
       isDefault: false,
     ),
-    PaymentMethodItem(
+    const PaymentMethodItem(
       method: PaymentMethod.easypaisa,
       name: 'Easypaisa',
       subtitle: '0321****890',
       isDefault: false,
     ),
-    PaymentMethodItem(
+    const PaymentMethodItem(
       method: PaymentMethod.bank,
       name: 'Bank Account',
       subtitle: 'HBL ****1234',

@@ -2,10 +2,11 @@ import 'package:flutter/material.dart';
 import '../../data/user_data_provider.dart';
 import '../../services/auth_service.dart' show BarberStatus;
 import '../../main.dart';
-import '../account/personal_info_screen.dart';
 import '../account/notifications_screen.dart';
 import '../account/help_support_screen.dart';
 import '../account/web_content_screen.dart';
+import '../../widgets/v2_notice.dart';
+import 'barber_slot_management_screen.dart';
 import 'service_management_screen.dart';
 
 class BarberProfileScreen extends StatefulWidget {
@@ -417,28 +418,31 @@ class _BarberProfileScreenState extends State<BarberProfileScreen> {
             Icons.schedule,
             'Working Hours',
             'Set your availability',
-            () => _showComingSoon('Working Hours'),
+            () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const BarberSlotManagementScreen()),
+            ),
           ),
           _buildDivider(),
           _buildMenuItem(
             Icons.location_on_outlined,
             'Shop Location',
             'Update address',
-            () => _showComingSoon('Shop Location'),
+            () => showV2Notice(context, 'Shop Location'),
           ),
           _buildDivider(),
           _buildMenuItem(
             Icons.photo_library_outlined,
             'Portfolio',
             'Showcase your work',
-            () => _showComingSoon('Portfolio'),
+            () => showV2Notice(context, 'Portfolio'),
           ),
           _buildDivider(),
           _buildMenuItem(
             Icons.star_border,
             'Reviews',
             'View customer feedback',
-            () => _showComingSoon('Reviews'),
+            () => showV2Notice(context, 'Reviews'),
           ),
         ],
       ),
@@ -504,15 +508,6 @@ class _BarberProfileScreenState extends State<BarberProfileScreen> {
             ),
           ),
         ],
-      ),
-    );
-  }
-
-  void _showComingSoon(String feature) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('$feature coming soon!'),
-        duration: const Duration(seconds: 1),
       ),
     );
   }

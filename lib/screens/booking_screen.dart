@@ -6,7 +6,9 @@ import '../models/slot.dart';
 import '../data/user_data_provider.dart';
 import '../services/firestore_service.dart';
 import '../services/booking_engine_service.dart';
+import '../widgets/query_error_view.dart';
 import 'booking_confirmation.dart';
+import 'wallet_screen.dart';
 
 class BookingScreen extends StatefulWidget {
   final Barber barber;
@@ -26,10 +28,11 @@ class _BookingScreenState extends State<BookingScreen> {
   String? _selectedTimeSlot;
   Set<String> _bookedSlots = {};
   bool _isLoadingSlots = true;
+  Object? _slotsError;
   
   // Service selection
   List<BarberService> _availableServices = [];
-  Set<String> _selectedServiceIds = {};
+  final Set<String> _selectedServiceIds = {};
   bool _isLoadingServices = true;
   
   // Booking for family/friend
@@ -76,19 +79,37 @@ class _BookingScreenState extends State<BookingScreen> {
   }
 
   Future<void> _loadBookedSlots() async {
-    setState(() => _isLoadingSlots = true);
+    setState(() {
+      _isLoadingSlots = true;
+      _slotsError = null;
+    });
     
     final dateKey = '${_selectedDate.year}-${_selectedDate.month.toString().padLeft(2, '0')}-${_selectedDate.day.toString().padLeft(2, '0')}';
-    final slots = await _firestoreService.getBookedSlots(widget.barber.id, dateKey);
-    
-    if (mounted) {
-      setState(() {
-        _bookedSlots = slots;
-        _isLoadingSlots = false;
-        if (_selectedTimeSlot != null && slots.contains(_selectedTimeSlot)) {
-          _selectedTimeSlot = null;
-        }
-      });
+
+    try {
+      final slots = await _firestoreService.getBookedSlots(widget.barber.id, dateKey);
+
+      if (mounted) {
+        setState(() {
+          _bookedSlots = slots;
+          _isLoadingSlots = false;
+          if (_selectedTimeSlot != null && slots.contains(_selectedTimeSlot)) {
+            _selectedTimeSlot = null;
+          }
+        });
+      }
+    } catch (e) {
+      // Missing composite index, permission error, offline, bad data — none of
+      // these should take the whole screen down. Keep the slot grid usable
+      // (the backend re-validates availability on booking) and show a banner.
+      print('⚠️ BookingScreen: Failed to load booked slots: $e');
+      if (mounted) {
+        setState(() {
+          _bookedSlots = {};
+          _isLoadingSlots = false;
+          _slotsError = e;
+        });
+      }
     }
   }
 
@@ -112,9 +133,6 @@ class _BookingScreenState extends State<BookingScreen> {
   Widget build(BuildContext context) {
     final barber = widget.barber;
     final isBookable = barber.isBookable;
-    final walletBalance = _userDataProvider.customerWalletBalance;
-    final price = _totalPrice;
-    final hasEnoughBalance = walletBalance >= price;
 
     return Scaffold(
       backgroundColor: Colors.white,
@@ -130,7 +148,30 @@ class _BookingScreenState extends State<BookingScreen> {
           style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
         ),
       ),
-      body: Column(
+      // Rebuild whenever UserDataProvider changes so the wallet balance —
+      // which loads asynchronously after login — re-evaluates the Confirm
+      // button instead of leaving it stuck on "Insufficient Balance".
+      body: ListenableBuilder(
+        listenable: _userDataProvider,
+        builder: (context, _) {
+          final walletBalance = _userDataProvider.customerWalletBalance;
+          final price = _totalPrice;
+          final hasEnoughBalance = walletBalance >= price;
+
+          return _buildBody(barber, isBookable, walletBalance, price, hasEnoughBalance);
+        },
+      ),
+    );
+  }
+
+  Widget _buildBody(
+    Barber barber,
+    bool isBookable,
+    int walletBalance,
+    int price,
+    bool hasEnoughBalance,
+  ) {
+    return Column(
         children: [
           _buildBarberHeader(barber, isBookable),
           Expanded(
@@ -168,7 +209,6 @@ class _BookingScreenState extends State<BookingScreen> {
           // Book Button
           _buildBookButton(barber, isBookable, hasEnoughBalance),
         ],
-      ),
     );
   }
 
@@ -370,7 +410,16 @@ class _BookingScreenState extends State<BookingScreen> {
             children: [
               CircleAvatar(
                 radius: 30,
-                backgroundImage: NetworkImage(barber.imageUrl),
+                backgroundColor: Colors.grey[200],
+                backgroundImage: barber.imageUrl.startsWith('http')
+                    ? NetworkImage(barber.imageUrl)
+                    : null,
+                onBackgroundImageError: barber.imageUrl.startsWith('http')
+                    ? (_, __) {} // swallow 404s / bad URLs — fallback icon shows
+                    : null,
+                child: barber.imageUrl.startsWith('http')
+                    ? null
+                    : Icon(Icons.person, color: Colors.grey[500], size: 30),
               ),
               Positioned(
                 right: 0,
@@ -620,6 +669,18 @@ class _BookingScreenState extends State<BookingScreen> {
           ],
         ),
         const SizedBox(height: 12),
+
+        // Couldn't fetch booked slots (e.g. missing index / offline) — show a
+        // friendly banner but keep the grid usable.
+        if (_slotsError != null) ...[
+          QueryErrorView(
+            error: _slotsError,
+            compact: true,
+            onRetry: _loadBookedSlots,
+          ),
+          const SizedBox(height: 12),
+        ],
+
         if (slots.isEmpty)
           Container(
             padding: const EdgeInsets.all(24),
@@ -635,6 +696,11 @@ class _BookingScreenState extends State<BookingScreen> {
                   Text(
                     'No available slots for this date',
                     style: TextStyle(color: Colors.grey[600]),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Working hours: ${barber.formattedWorkingHours}',
+                    style: TextStyle(color: Colors.grey[500], fontSize: 12),
                   ),
                 ],
               ),
@@ -743,7 +809,7 @@ class _BookingScreenState extends State<BookingScreen> {
                   }
                 });
               },
-              activeColor: const Color(0xFF1A1A1A),
+              activeThumbColor: const Color(0xFF1A1A1A),
             ),
           ],
         ),
@@ -751,6 +817,10 @@ class _BookingScreenState extends State<BookingScreen> {
           const SizedBox(height: 12),
           TextField(
             controller: _bookedForNameController,
+            textCapitalization: TextCapitalization.words,
+            // Re-evaluate canBook on every keystroke so the Confirm button
+            // flips from "Enter Name" as soon as a name is typed.
+            onChanged: (_) => setState(() {}),
             decoration: InputDecoration(
               labelText: 'Name of person *',
               hintText: 'Enter their name',
@@ -818,7 +888,12 @@ class _BookingScreenState extends State<BookingScreen> {
             ),
           ),
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            // Go straight to the wallet; the ListenableBuilder above picks up
+            // the new balance when the user comes back.
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const WalletScreen()),
+            ),
             child: const Text('Add Funds'),
           ),
         ],
@@ -913,13 +988,17 @@ class _BookingScreenState extends State<BookingScreen> {
     return '${_getDayName(date.weekday)}, ${date.day} ${_getMonthName(date.month)}';
   }
 
+  /// Parse "HH:mm" defensively. Returns null for malformed input instead of
+  /// throwing (Firestore may hold ints, empty strings, or odd formats).
+  static ({int hour, int minute})? _parseHHmm(String? value) =>
+      parseTimeSlot(value);
+
   List<String> _getAvailableTimeSlots(Barber barber) {
     final slots = <String>[];
-    final startParts = barber.workStartHour.split(':');
-    final endParts = barber.workEndHour.split(':');
-    final startHour = int.tryParse(startParts[0]) ?? 9;
-    final endHour = int.tryParse(endParts[0]) ?? 22;
+    final startHour = _parseHHmm(barber.workStartHour)?.hour ?? 9;
+    final endHour = _parseHHmm(barber.workEndHour)?.hour ?? 22;
     
+    // Inverted/zero-length hours → empty list → "No available slots" state.
     for (int hour = startHour; hour < endHour; hour++) {
       slots.add('${hour.toString().padLeft(2, '0')}:00');
       slots.add('${hour.toString().padLeft(2, '0')}:30');
@@ -934,26 +1013,30 @@ class _BookingScreenState extends State<BookingScreen> {
                     _selectedDate.year == now.year;
     if (!isToday) return false;
     
-    final parts = slot.split(':');
-    final slotHour = int.tryParse(parts[0]) ?? 0;
-    final slotMinute = int.tryParse(parts[1]) ?? 0;
+    final time = _parseHHmm(slot);
+    if (time == null) return true; // unparseable slot — treat as unavailable
     
-    return slotHour < now.hour || 
-           (slotHour == now.hour && slotMinute <= now.minute);
+    return time.hour < now.hour || 
+           (time.hour == now.hour && time.minute <= now.minute);
   }
 
   void _confirmBooking() {
     final barber = widget.barber;
-    final parts = _selectedTimeSlot!.split(':');
-    final hour = int.parse(parts[0]);
-    final minute = int.parse(parts[1]);
+    final time = _parseHHmm(_selectedTimeSlot);
+    if (time == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please select a valid time slot.')),
+      );
+      setState(() => _selectedTimeSlot = null);
+      return;
+    }
     
     final bookingDateTime = DateTime(
       _selectedDate.year,
       _selectedDate.month,
       _selectedDate.day,
-      hour,
-      minute,
+      time.hour,
+      time.minute,
     );
 
     // Gather selected service names for display

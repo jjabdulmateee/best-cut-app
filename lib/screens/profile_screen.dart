@@ -8,6 +8,7 @@ import 'account/notifications_screen.dart';
 import 'account/help_support_screen.dart';
 import 'account/web_content_screen.dart';
 import 'account/add_money_screen.dart';
+import '../widgets/v2_notice.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -114,14 +115,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             actions: [
               IconButton(
                 icon: const Icon(Icons.settings_outlined, color: Color(0xFF1A1A1A)),
-                onPressed: () {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Settings coming soon!'),
-                      duration: Duration(seconds: 1),
-                    ),
-                  );
-                },
+                onPressed: () => showV2Notice(context, 'Settings'),
               ),
             ],
           ),

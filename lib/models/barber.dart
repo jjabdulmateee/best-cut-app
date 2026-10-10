@@ -196,7 +196,7 @@ class Barber {
   factory Barber.fromMap(Map<String, dynamic> map) {
     // Defensive parsing: Firestore may store workStartHour/workEndHour as int
     // (e.g. 9 instead of '09:00'). Convert gracefully to avoid type errors.
-    String _parseHour(dynamic value, String fallback) {
+    String parseHour(dynamic value, String fallback) {
       if (value == null) return fallback;
       if (value is String) return value;
       if (value is int) return '${value.toString().padLeft(2, '0')}:00';
@@ -219,8 +219,8 @@ class Barber {
       priceStartingPKR: (map['priceStartingPKR'] ?? 0).toDouble(),
       status: (map['status'] ?? 'pending').toString(),
       avgDurationMinutes: (map['avgDurationMinutes'] is int) ? map['avgDurationMinutes'] : int.tryParse(map['avgDurationMinutes']?.toString() ?? '30') ?? 30,
-      workStartHour: _parseHour(map['workStartHour'], '09:00'),
-      workEndHour: _parseHour(map['workEndHour'], '22:00'),
+      workStartHour: parseHour(map['workStartHour'], '09:00'),
+      workEndHour: parseHour(map['workEndHour'], '22:00'),
       daysOff: List<int>.from(map['daysOff'] ?? []),
       bio: map['bio']?.toString(),
       address: map['address']?.toString(),

@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import '../data/user_data_provider.dart';
 import '../data/app_data.dart' show WalletTransaction, TransactionType, TransactionTypeExtension;
 import 'account/add_money_screen.dart';
+import 'transaction_history_screen.dart';
+import '../widgets/v2_notice.dart';
 
 class WalletScreen extends StatefulWidget {
   const WalletScreen({super.key});
@@ -36,11 +38,11 @@ class _WalletScreenState extends State<WalletScreen> {
       body: CustomScrollView(
         slivers: [
           // App bar
-          SliverAppBar(
+          const SliverAppBar(
             backgroundColor: Colors.white,
             pinned: true,
             elevation: 0,
-            title: const Text(
+            title: Text(
               'Wallet',
               style: TextStyle(
                 color: Color(0xFF1A1A1A),
@@ -83,7 +85,12 @@ class _WalletScreenState extends State<WalletScreen> {
                     ),
                   ),
                   TextButton(
-                    onPressed: () {},
+                    onPressed: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const TransactionHistoryScreen(),
+                      ),
+                    ),
                     child: Text(
                       'See all',
                       style: TextStyle(
@@ -234,7 +241,12 @@ class _WalletScreenState extends State<WalletScreen> {
           child: _buildActionButton(
             icon: Icons.history,
             label: 'History',
-            onTap: () {},
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => const TransactionHistoryScreen(),
+              ),
+            ),
           ),
         ),
         const SizedBox(width: 12),
@@ -243,12 +255,7 @@ class _WalletScreenState extends State<WalletScreen> {
             icon: Icons.help_outline,
             label: 'Help',
             onTap: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Help center coming soon!'),
-                  duration: Duration(seconds: 1),
-                ),
-              );
+              showV2Notice(context, 'Help center');
             },
           ),
         ),

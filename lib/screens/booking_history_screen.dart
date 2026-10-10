@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../models/slot.dart';
 import '../services/booking_engine_service.dart';
+import '../widgets/query_error_view.dart';
 import 'booking_details_screen.dart';
 import 'reroute_options_sheet.dart';
 
@@ -15,7 +16,10 @@ import 'reroute_options_sheet.dart';
 // ============================================================================
 
 class BookingHistoryScreen extends StatefulWidget {
-  const BookingHistoryScreen({super.key});
+  /// Switches the customer bottom nav to Home. Set by [MainNavigation].
+  final VoidCallback? onFindBarber;
+
+  const BookingHistoryScreen({super.key, this.onFindBarber});
 
   @override
   State<BookingHistoryScreen> createState() => _BookingHistoryScreenState();
@@ -37,6 +41,24 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen>
   void dispose() {
     _tabController.dispose();
     super.dispose();
+  }
+
+  /// Fire-and-forget: hand expired pending requests to the engine's
+  /// 15-minute auto-reroute. The engine de-duplicates concurrent runs and the
+  /// Firestore stream will deliver the updated booking back to this screen.
+  void _triggerAutoReroutes(List<Booking> bookings) {
+    for (final booking in bookings) {
+      if (!_engine.needsAutoReroute(booking)) continue;
+      _engine.autoRerouteIfExpired(booking).then((result) {
+        if (!mounted || !result.success) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(result.message),
+            backgroundColor: const Color(0xFF9C27B0),
+          ),
+        );
+      });
+    }
   }
 
   @override
@@ -97,39 +119,28 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen>
         ),
       ),
       body: StreamBuilder<List<Booking>>(
-        stream: _engine.streamCustomerBookings(_userId!),
+        stream: _engine.streamCustomerBookings(_userId),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
           }
 
           if (snapshot.hasError) {
-            return Center(
-              child: Padding(
-                padding: const EdgeInsets.all(40),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.error_outline, size: 48, color: Colors.grey[400]),
-                    const SizedBox(height: 16),
-                    Text(
-                      'Could not load bookings',
-                      style: TextStyle(color: Colors.grey[600], fontSize: 16),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      '${snapshot.error}',
-                      style: TextStyle(color: Colors.grey[400], fontSize: 12),
-                      textAlign: TextAlign.center,
-                    ),
-                  ],
-                ),
-              ),
+            // Friendly copy instead of the raw exception (which can leak
+            // "requires an index" / permission messages to the user).
+            return QueryErrorView(
+              error: snapshot.error,
+              title: 'Could not load bookings',
+              onRetry: () => setState(() {}),
             );
           }
 
           final allBookings = snapshot.data ?? [];
           final now = DateTime.now();
+
+          // 15-MIN TIMEOUT: any request the barber hasn't answered in time is
+          // flagged 'rerouting' and routed to the next nearest active barber.
+          _triggerAutoReroutes(allBookings);
 
           final upcoming = allBookings
               .where((b) =>
@@ -398,6 +409,10 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen>
         bgColor = Colors.orange.withValues(alpha: 0.1);
         textColor = Colors.orange;
         break;
+      case BookingStatus.rerouting:
+        bgColor = const Color(0xFF9C27B0).withValues(alpha: 0.1);
+        textColor = const Color(0xFF9C27B0);
+        break;
       case BookingStatus.confirmed:
         bgColor = const Color(0xFF00AA5B).withValues(alpha: 0.1);
         textColor = const Color(0xFF00AA5B);
@@ -478,9 +493,7 @@ class _BookingHistoryScreenState extends State<BookingHistoryScreen>
             if (isUpcoming) ...[
               const SizedBox(height: 24),
               ElevatedButton(
-                onPressed: () {
-                  // Navigate to home tab (pop to first for now)
-                },
+                onPressed: widget.onFindBarber,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF1A1A1A),
                   foregroundColor: Colors.white,

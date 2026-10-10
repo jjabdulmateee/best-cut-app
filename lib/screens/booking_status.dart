@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/slot.dart';
+import '../widgets/v2_notice.dart';
 
 class BookingStatusScreen extends StatefulWidget {
   final Booking booking;
@@ -527,14 +528,7 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                 child: _buildActionButton(
                   icon: Icons.calendar_today_outlined,
                   label: 'Add to Calendar',
-                  onTap: () {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Calendar integration coming soon!'),
-                        duration: Duration(seconds: 1),
-                      ),
-                    );
-                  },
+                  onTap: () => showV2Notice(context, 'Add to Calendar'),
                 ),
               ),
               const SizedBox(width: 12),
@@ -542,14 +536,7 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                 child: _buildActionButton(
                   icon: Icons.share_outlined,
                   label: 'Share',
-                  onTap: () {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Sharing coming soon!'),
-                        duration: Duration(seconds: 1),
-                      ),
-                    );
-                  },
+                  onTap: () => showV2Notice(context, 'Share'),
                 ),
               ),
               const SizedBox(width: 12),
@@ -557,14 +544,7 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
                 child: _buildActionButton(
                   icon: Icons.help_outline,
                   label: 'Get Help',
-                  onTap: () {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Help center coming soon!'),
-                        duration: Duration(seconds: 1),
-                      ),
-                    );
-                  },
+                  onTap: () => showV2Notice(context, 'Get Help'),
                 ),
               ),
             ],
@@ -618,14 +598,7 @@ class _BookingStatusScreenState extends State<BookingStatusScreen>
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton(
-                  onPressed: () {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Booking details coming soon!'),
-                        duration: Duration(seconds: 1),
-                      ),
-                    );
-                  },
+                  onPressed: () => showV2Notice(context, 'Booking details'),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF1A1A1A),
                     foregroundColor: Colors.white,

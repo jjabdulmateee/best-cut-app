@@ -6,7 +6,8 @@
  * Scheduled function: checkExpiredAssignments
  *   - Runs every 1 minute
  *   - Finds bookings where status=pending AND assignmentExpiresAt < now
- *   - Marks assignmentExpired = true
+ *     (barber had ASSIGNMENT_TIMEOUT_MINUTES = 15 minutes to accept)
+ *   - Marks assignmentExpired = true and sets status = 'rerouting'
  *   - Increments barber's ignoredAssignmentsCount
  *   - Does NOT cancel, does NOT refund, escrow stays untouched
  *   - Customer app detects flag and shows reroute/cancel options
@@ -18,6 +19,13 @@ import * as admin from "firebase-admin";
 admin.initializeApp();
 
 const db = admin.firestore();
+
+/**
+ * How long a barber has to accept a request before it is flagged for
+ * rerouting. Keep in sync with
+ * `BookingEngineService.assignmentTimeoutMinutes` in the Flutter app.
+ */
+const ASSIGNMENT_TIMEOUT_MINUTES = 15;
 
 // ============================================================================
 // SCHEDULED FUNCTION: checkExpiredAssignments
@@ -55,8 +63,11 @@ export const checkExpiredAssignments = functions.pubsub
         const barberId = data.barberId as string;
         const bookingId = doc.id;
 
-        // Mark assignment as expired — DO NOT cancel, DO NOT refund
+        // Mark assignment as expired and flag for reroute — DO NOT cancel,
+        // DO NOT refund. The customer app picks the next nearest active
+        // barber and calls `rerouteBooking` (or writes directly).
         batch.update(doc.ref, {
+          status: "rerouting",
           assignmentExpired: true,
           updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         });
@@ -174,15 +185,15 @@ export const rerouteBooking = functions.https.onCall(async (data, context) => {
       );
     }
 
-    // Must be pending + expired
-    if (booking.status !== "pending") {
+    // Must be (pending + expired) or already flagged 'rerouting'
+    if (booking.status !== "pending" && booking.status !== "rerouting") {
       throw new functions.https.HttpsError(
         "failed-precondition",
-        "Booking must be in pending status to reroute."
+        "Booking must be in pending or rerouting status to reroute."
       );
     }
 
-    if (!booking.assignmentExpired) {
+    if (booking.status === "pending" && !booking.assignmentExpired) {
       throw new functions.https.HttpsError(
         "failed-precondition",
         "Assignment has not expired yet."
@@ -228,10 +239,10 @@ export const rerouteBooking = functions.https.onCall(async (data, context) => {
       );
     }
 
-    // Calculate new expiry (30 minutes from now)
+    // Calculate new expiry (15 minutes from now)
     const now = admin.firestore.Timestamp.now();
     const expiresAt = admin.firestore.Timestamp.fromMillis(
-      now.toMillis() + 30 * 60 * 1000
+      now.toMillis() + ASSIGNMENT_TIMEOUT_MINUTES * 60 * 1000
     );
 
     // Update the SAME booking document — no new booking created
@@ -257,7 +268,7 @@ export const rerouteBooking = functions.https.onCall(async (data, context) => {
 
     return {
       success: true,
-      message: `Booking rerouted to ${newBarber.name || "new barber"}. They have 30 minutes to respond.`,
+      message: `Booking rerouted to ${newBarber.name || "new barber"}. They have ${ASSIGNMENT_TIMEOUT_MINUTES} minutes to respond.`,
       newBarberId: newBarberId,
       rerouteCount: currentRerouteCount + 1,
     };

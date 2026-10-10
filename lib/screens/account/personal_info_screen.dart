@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../data/user_data_provider.dart';
+import '../../widgets/v2_notice.dart';
 
 class PersonalInfoScreen extends StatefulWidget {
   const PersonalInfoScreen({super.key});
@@ -134,14 +135,7 @@ class _PersonalInfoScreenState extends State<PersonalInfoScreen> {
                   ),
                   const SizedBox(height: 12),
                   TextButton.icon(
-                    onPressed: () {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('Photo upload coming soon!'),
-                          duration: Duration(seconds: 1),
-                        ),
-                      );
-                    },
+                    onPressed: () => showV2Notice(context, 'Photo upload'),
                     icon: const Icon(Icons.camera_alt_outlined, size: 18),
                     label: const Text('Change Photo'),
                     style: TextButton.styleFrom(

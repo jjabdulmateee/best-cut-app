@@ -4,7 +4,7 @@ import '../../models/slot.dart';
 import '../../services/booking_engine_service.dart';
 import '../../services/connectivity_service.dart';
 import '../../services/system_monitor_service.dart';
-import '../../widgets/admin_override_indicator.dart';
+import 'barber_earnings_screen.dart';
 import 'barber_slot_management_screen.dart';
 
 class BarberDashboardScreen extends StatefulWidget {
@@ -102,25 +102,33 @@ class _BarberDashboardScreenState extends State<BarberDashboardScreen> {
     if (mounted) {
       setState(() => _isTogglingOnline = false);
       
-      if (success) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Row(
-              children: [
-                Icon(
-                  goOnline ? Icons.wifi : Icons.wifi_off,
-                  color: Colors.white,
-                ),
-                const SizedBox(width: 12),
-                Text(goOnline ? "You're now Online!" : "You're now Offline"),
-              ],
-            ),
-            backgroundColor: goOnline ? const Color(0xFF00C853) : Colors.grey[800],
-            behavior: SnackBarBehavior.floating,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              Icon(
+                success
+                    ? (goOnline ? Icons.wifi : Icons.wifi_off)
+                    : Icons.error_outline,
+                color: Colors.white,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(success
+                    ? (goOnline ? "You're now Online!" : "You're now Offline")
+                    : 'Could not update your status. Please try again.'),
+              ),
+            ],
           ),
-        );
-      }
+          backgroundColor: !success
+              ? Colors.red[700]
+              : goOnline
+                  ? const Color(0xFF00C853)
+                  : Colors.grey[800],
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        ),
+      );
     }
   }
 
@@ -441,7 +449,7 @@ class _BarberDashboardScreenState extends State<BarberDashboardScreen> {
                   onChanged: _isTogglingOnline || (!isOnline && !canGoOnline) 
                       ? null 
                       : _toggleOnlineStatus,
-                  activeColor: Colors.white,
+                  activeThumbColor: Colors.white,
                   activeTrackColor: Colors.white.withValues(alpha: 0.4),
                   inactiveThumbColor: Colors.white,
                   inactiveTrackColor: Colors.white.withValues(alpha: 0.3),
@@ -655,18 +663,30 @@ class _BarberDashboardScreenState extends State<BarberDashboardScreen> {
                   width: double.infinity,
                   child: ElevatedButton(
                     onPressed: () async {
-                      await _userDataProvider.updateWorkingHours(
-                        newStartHour,
-                        newEndHour,
-                        daysOff: daysOff,
-                      );
-                      Navigator.pop(context);
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('Working hours updated'),
-                          backgroundColor: Color(0xFF00C853),
-                        ),
-                      );
+                      final messenger = ScaffoldMessenger.of(this.context);
+                      final navigator = Navigator.of(context);
+                      try {
+                        await _userDataProvider.updateWorkingHours(
+                          newStartHour,
+                          newEndHour,
+                          daysOff: daysOff,
+                        );
+                        if (!mounted) return;
+                        navigator.pop();
+                        messenger.showSnackBar(
+                          const SnackBar(
+                            content: Text('Working hours updated'),
+                            backgroundColor: Color(0xFF00C853),
+                          ),
+                        );
+                      } catch (e) {
+                        messenger.showSnackBar(
+                          SnackBar(
+                            content: Text('Could not save working hours: $e'),
+                            backgroundColor: Colors.red,
+                          ),
+                        );
+                      }
                     },
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFF1A1A1A),
@@ -868,6 +888,21 @@ class _BarberDashboardScreenState extends State<BarberDashboardScreen> {
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFF2196F3),
                       foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                // Accepted → Emergency cancel (reroutes to next barber)
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => _showCancelAcceptedDialog(booking),
+                    icon: const Icon(Icons.cancel_outlined, size: 20),
+                    label: const Text('Cancel Booking'),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.redAccent,
+                      side: const BorderSide(color: Colors.redAccent),
                       padding: const EdgeInsets.symmetric(vertical: 14),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                     ),
@@ -1238,7 +1273,7 @@ class _BarberDashboardScreenState extends State<BarberDashboardScreen> {
         title: const Text('Decline Booking?'),
         content: const Text(
             'Are you sure you want to decline this booking request?\n'
-            'The customer will receive a full refund.'),
+            'It will be sent to the next nearest available barber.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -1269,6 +1304,77 @@ class _BarberDashboardScreenState extends State<BarberDashboardScreen> {
           ),
         );
       }
+    }
+  }
+
+  Future<void> _showCancelAcceptedDialog(Booking booking) async {
+    final reasonController = TextEditingController();
+
+    final reason = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) {
+          final canSubmit = reasonController.text.trim().isNotEmpty;
+          return AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: const Text('Cancel Accepted Booking?'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'The booking will be sent to the next nearest available barber. '
+                  'Please tell the customer why.',
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: reasonController,
+                  autofocus: true,
+                  maxLines: 3,
+                  textCapitalization: TextCapitalization.sentences,
+                  onChanged: (_) => setDialogState(() {}),
+                  decoration: InputDecoration(
+                    labelText: 'Reason *',
+                    hintText: 'e.g. Family emergency',
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('Keep Booking'),
+              ),
+              ElevatedButton(
+                onPressed: canSubmit
+                    ? () => Navigator.pop(dialogContext, reasonController.text.trim())
+                    : null,
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+                child: const Text('Cancel Booking', style: TextStyle(color: Colors.white)),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+
+    if (reason == null || reason.isEmpty) return;
+
+    if (_systemMonitor.hasSystemRestrictions) {
+      _showValidationError(_systemMonitor.restrictionMessage);
+      return;
+    }
+
+    final result = await _engine.cancelAcceptedBooking(booking.id, reason);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(result.message),
+          backgroundColor: result.success ? Colors.grey[800] : Colors.red,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
     }
   }
 
@@ -1570,7 +1676,12 @@ class _BarberDashboardScreenState extends State<BarberDashboardScreen> {
                   'View Earnings',
                   Icons.trending_up,
                   () {
-                    // Navigate to earnings tab handled by bottom nav
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const BarberEarningsScreen(),
+                      ),
+                    );
                   },
                 ),
               ),
