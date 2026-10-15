@@ -87,14 +87,31 @@ app.*.map.json
 
 # Environment variables
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
+**/functions/.env
+**/functions/.env.*
+**/functions/.runtimeconfig.json
 
 # API Keys & Secrets (DO NOT COMMIT)
 **/secrets/
 **/keys/
 **/*_secret.dart
 **/*_key.dart
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+**/key.properties
+**/local.properties
+**/*service-account*.json
+**/*serviceAccount*.json
+**/*-firebase-adminsdk-*.json
+
+# Cloud Functions build output & deps
+**/functions/node_modules/
+**/functions/lib/
 
 # MacOS
 .DS_Store
